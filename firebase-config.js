@@ -15,7 +15,7 @@
     appId: '1:79940113871:web:fbf769a8ca5999e6296eba',
     // Free email via Apps Script (no Blaze). Paste script URL after deploy. See docs/EMAIL-FREE-APPS-SCRIPT.md
     APP_SCRIPT_EMAIL_URL: '',
-    APP_SCRIPT_EMAIL_SECRET: 'MiklensEmailSecret2024XyZ789',
+    APP_SCRIPT_EMAIL_SECRET: '',
     APP_URL: 'https://miklens.github.io/Inventory-management'
   };
   if (typeof global !== 'undefined') global.FIREBASE_CONFIG = config;
