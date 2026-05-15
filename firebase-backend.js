@@ -881,6 +881,48 @@
     var d = snap.data();
     var payload = (d && d.data) ? d.data : d;
     var version = (d && d.latestId) ? d.latestId : null;
+    // Compute _effectiveStock (= Closing Phy) for every inventory item using same
+    // logic as calculateStock() in the main inventory app.
+    try {
+      var txns = Array.isArray(payload && payload.transactions) ? payload.transactions : [];
+      var today = new Date();
+      // Use local date string in IST-friendly way: just take the wall-clock date portion
+      var todayStr = today.getFullYear() + '-' +
+        String(today.getMonth() + 1).padStart(2, '0') + '-' +
+        String(today.getDate()).padStart(2, '0');
+      var invCats = ['rawMaterials', 'packingMaterials', 'labels', 'finishedGoods'];
+      invCats.forEach(function(cat) {
+        var arr = payload && payload.inventory && Array.isArray(payload.inventory[cat]) ? payload.inventory[cat] : [];
+        arr.forEach(function(item) {
+          var itemIdStr = String(item.id != null ? item.id : '');
+          var itemName  = String(item.name != null ? item.name : '');
+          var openingDate = item.openingStockDate || '2000-01-01';
+          function txMatch(tx) {
+            if (!tx || tx.category !== cat) return false;
+            var txId = String(tx.itemId != null ? tx.itemId : '');
+            return (txId !== '' && itemIdStr !== '' && txId === itemIdStr) ||
+                   (txId !== '' && itemName  !== '' && txId === itemName);
+          }
+          var running = parseFloat(item.openingStock) || 0;
+          var recToday = 0, conToday = 0;
+          txns.forEach(function(tx) {
+            var txDate = (tx.date || '').toString().slice(0, 10);
+            if (!txMatch(tx)) return;
+            var q = parseFloat(tx.quantity) || 0;
+            var type = tx.type || '';
+            if (txDate < openingDate) return;
+            if (txDate < todayStr) {
+              if (type === 'receive' || type === 'stock-take-adj-in' || type === 'production-add') running += q;
+              else if (type === 'consume' || type === 'stock-take-adj-out' || type === 'production-consume' || type === 'requisition-issue' || type === 'dispatch') running -= (q > 0 ? q : -q);
+            } else if (txDate === todayStr) {
+              if (type === 'receive' || type === 'stock-take-adj-in' || type === 'production-add') recToday += q;
+              else if (type === 'consume' || type === 'stock-take-adj-out' || type === 'production-consume' || type === 'requisition-issue' || type === 'dispatch') conToday += (q > 0 ? q : -q);
+            }
+          });
+          item._effectiveStock = running + recToday - conToday;
+        });
+      });
+    } catch(e) { /* non-fatal — _effectiveStock may be missing */ }
     return { status: 'success', result: 'success', data: payload, version: version };
   }
 
@@ -900,13 +942,90 @@
       }
     }
     var id = Date.now().toString();
+    var toSave = dataObj || parsed;
+    // Cap transactions to last 2000 to stay under Firestore's 1MB document limit
+    if (toSave && Array.isArray(toSave.transactions) && toSave.transactions.length > 2000) {
+      toSave = Object.assign({}, toSave, { transactions: toSave.transactions.slice(-2000) });
+    }
+    // Sanitize for Firestore: strip undefined/NaN/Infinity and dots in field names
     await db.collection('Database').doc('latest').set({
-      data: dataObj || parsed,
+      data: sanitizeForFirestore(toSave),
       latestId: id,
       exportedAt: new Date().toISOString()
     });
     return { status: 'success', result: 'success', version: id };
   }
+
+  // ── Version History ────────────────────────────────────────────────────────
+  async function saveVersionSnapshot(versionId, data, savedBy) {
+    if (!db || !data) return;
+    var toSave = (Array.isArray(data.transactions) && data.transactions.length > 2000)
+      ? Object.assign({}, data, { transactions: data.transactions.slice(-2000) })
+      : data;
+    var inv = data.inventory || {};
+    var meta = {
+      versionId: versionId,
+      savedAt: new Date().toISOString(),
+      savedBy: String(savedBy || 'system'),
+      rawMaterials: (inv.rawMaterials || []).length,
+      packingMaterials: (inv.packingMaterials || []).length,
+      labels: (inv.labels || []).length,
+      finishedGoods: (inv.finishedGoods || []).length,
+      transactionCount: (data.transactions || []).length,
+      data: sanitizeForFirestore(toSave)
+    };
+    await db.collection('DatabaseVersions').doc(String(versionId)).set(meta);
+    // Prune: keep only last 10 versions (delete oldest)
+    try {
+      var all = await db.collection('DatabaseVersions').orderBy('savedAt', 'asc').get();
+      if (all.size > 10) {
+        var toDelete = all.docs.slice(0, all.size - 10);
+        for (var i = 0; i < toDelete.length; i++) {
+          await toDelete[i].ref.delete();
+        }
+      }
+    } catch (pruneErr) { console.warn('Version prune failed', pruneErr); }
+  }
+
+  async function getVersions() {
+    var snap = await db.collection('DatabaseVersions').orderBy('savedAt', 'desc').limit(10).get();
+    var versions = [];
+    snap.forEach(function(d) {
+      var v = d.data();
+      versions.push({
+        versionId: v.versionId || d.id,
+        savedAt: v.savedAt,
+        savedBy: v.savedBy,
+        rawMaterials: v.rawMaterials,
+        packingMaterials: v.packingMaterials,
+        labels: v.labels,
+        finishedGoods: v.finishedGoods,
+        transactionCount: v.transactionCount
+      });
+    });
+    return ok({ versions: versions });
+  }
+
+  async function getVersionData(p) {
+    var versionId = String(p.versionId || '');
+    if (!versionId) return fail(new Error('versionId required'));
+    var snap = await db.collection('DatabaseVersions').doc(versionId).get();
+    if (!snap.exists) return fail(new Error('Version not found'));
+    var v = snap.data();
+    return ok({ version: { versionId: v.versionId, savedAt: v.savedAt, savedBy: v.savedBy, data: v.data } });
+  }
+
+  async function restoreVersion(p) {
+    var versionId = String(p.versionId || '');
+    if (!versionId) return fail(new Error('versionId required'));
+    var snap = await db.collection('DatabaseVersions').doc(versionId).get();
+    if (!snap.exists) return fail(new Error('Version not found'));
+    var v = snap.data();
+    if (!v.data) return fail(new Error('Version data is empty'));
+    // Force restore: no version conflict check (pass baseVersion = null)
+    return await saveInventory(v.data, null);
+  }
+  // ─────────────────────────────────────────────────────────────────────────
 
   async function saveUniversalPackDefaultsOnly(universalPackDetails, baseVersionParam) {
     var details = (universalPackDetails && typeof universalPackDetails === 'object') ? universalPackDetails : {};
@@ -971,6 +1090,13 @@
       row.labels = safeJson(r.Labels || r.labels, []);
       row.additionalItems = safeJson(r.AdditionalItems || r.additionalItems, []);
       row.corrections = safeJson(r.Corrections || r.corrections, []);
+      row.producedBy = r.ProducedBy || '';
+      row.batchId = r.BatchID || r.batchId || '';
+      row.adminEmail = r.AdminEmail || '';
+      row.adminName = r.AdminName || '';
+      row.productionDate = r.ProductionDate || '';
+      row.adminDirectProduce = r.AdminDirectProduce || false;
+      row.shortfalls = r.Shortfalls || '';
     } else if ((String(r.Type || r.type || '')).toUpperCase() === 'RESEARCH') {
       row.additionalItems = safeJson(r.AdditionalItems || r.additionalItems, []);
     }
@@ -1712,7 +1838,10 @@
         if (cur.indexOf('MANUFACTURING') >= 0 || cur.indexOf('WIP') >= 0 || cur.indexOf('MATERIAL ISSUED') >= 0 || cur === 'PAUSED') return true;
         return false;
       }
-      if (st === 'DISPATCH' && (cur.indexOf('AWAITING DISPATCH') >= 0 || status === 'PRODUCED')) return true;
+      if (st === 'DISPATCH') {
+        if (r.AdminDirectProduce || r.adminDirectProduce) return false;
+        if (cur.indexOf('AWAITING DISPATCH') >= 0 || status === 'PRODUCED') return true;
+      }
       if (st === 'PENDING_RECORD' && (cur.indexOf('AWAITING PRODUCTION RECORDING') >= 0 || cur.indexOf('MATERIAL ISSUED') >= 0)) return true;
       if (st === 'PARTIAL_ISSUE' && status === 'PARTIALLY_ISSUED') return true;
       return false;
@@ -2032,7 +2161,7 @@
       if (isPendingApproval) counts.PENDING_APPROVALS++;
       if (isPendingIssue) counts.PENDING_ISSUE++;
       if (isWip) counts.WIP++;
-      if (cur.indexOf('AWAITING DISPATCH') >= 0 || status === 'PRODUCED') counts.DISPATCH++;
+      if (!r.AdminDirectProduce && !r.adminDirectProduce && (cur.indexOf('AWAITING DISPATCH') >= 0 || status === 'PRODUCED')) counts.DISPATCH++;
       if (cur.indexOf('AWAITING PRODUCTION RECORDING') >= 0) counts.PENDING_RECORD++;
       if (status === 'PARTIALLY_ISSUED') counts.PARTIAL_ISSUE++;
       if ((isPendingApproval || isPendingIssue) && createdMs && (now - createdMs > overdueThresholdMs)) counts.OVERDUE++;
@@ -3492,6 +3621,339 @@
     return ok({});
   }
 
+  /**
+   * Admin Direct Production — skips all approval/issue/record stages.
+   * Deducts ingredients from Database/latest, adds produced qty to finished goods,
+   * logs a transaction, and creates a Requisitions_V2 record (Status: PRODUCED).
+   */
+  async function adminDirectProduce(params) {
+    var adminId = adminIdentifier(params) || (params.email || '').toLowerCase().trim();
+    var allowed = await hasRole(adminId, ['Admin', 'Manager']);
+    if (!allowed) return fail(new Error('Admin or Manager privileges required for Direct Production.'));
+
+    var productName = (params.productName || '').toString().trim();
+    if (!productName) return fail(new Error('Product name is required.'));
+
+    var producedQty = parseFloat(params.producedQty || params.quantity || 0);
+    if (!producedQty || producedQty <= 0) return fail(new Error('Produced quantity must be greater than zero.'));
+
+    var producedBy   = (params.producedBy || '').toString().trim() || 'Not specified';
+    var adminEmail   = (params.email || '').toLowerCase().trim();
+    var adminName    = (params.user || '').toString().trim();
+    var productionDate = (params.productionDate || new Date().toISOString().split('T')[0]).toString().trim();
+    var notes        = (params.notes || '').toString().trim();
+    var unit         = (params.unit || '').toString().trim();
+    var formulaId    = (params.formulaId != null ? String(params.formulaId) : '');
+    var batchId      = (params.batchId || ('ADMIN-BATCH-' + Date.now())).toString().trim();
+
+    // Ingredients to deduct: array of { itemId, itemName, category, quantity }
+    var ingredients = [];
+    try {
+      var raw = params.ingredients;
+      if (typeof raw === 'string') raw = JSON.parse(raw);
+      if (Array.isArray(raw)) ingredients = raw;
+    } catch (e) { ingredients = []; }
+
+    // ── Read Database/latest ──────────────────────────────────────────────────
+    var latestRef = db.collection('Database').doc('latest');
+    var snap = await latestRef.get();
+    if (!snap.exists) return fail(new Error('No inventory data found. Add stock in Main Inventory first.'));
+    var d = snap.data();
+    var currentVersion = (d.latestId || '').toString();
+    var payload = (d.data != null) ? d.data : d;
+    var inv = (payload && payload.inventory) ? payload.inventory : payload;
+    if (!inv || typeof inv !== 'object') return fail(new Error('Inventory structure not found.'));
+    if (!Array.isArray(payload.transactions)) payload.transactions = [];
+
+    var nowIso = new Date().toISOString();
+    var shortfalls = [];
+
+    // ── Deduct each ingredient ────────────────────────────────────────────────
+    for (var ci = 0; ci < ingredients.length; ci++) {
+      var ing = ingredients[ci];
+      var cat = (ing.category || 'rawMaterials').toString();
+      var ingQty = parseFloat(ing.quantity || ing.qty || 0);
+      if (!ingQty || ingQty <= 0) continue;
+
+      var arr = Array.isArray(inv[cat]) ? inv[cat] : [];
+      var ingIdStr   = (ing.itemId != null ? String(ing.itemId) : '').trim();
+      var ingNameStr = (ing.itemName || ing.name || '').toString().trim();
+      var remaining  = ingQty;
+
+      for (var ii = 0; ii < arr.length && remaining > 0; ii++) {
+        var item = arr[ii];
+        var match = (ingIdStr && (String(item.id || '') === ingIdStr || String(item.itemId || '') === ingIdStr)) ||
+                    (ingNameStr && (String(item.name || '') === ingNameStr || String(item.itemName || '') === ingNameStr));
+        if (!match) continue;
+        var current = getInventoryQty(item);
+        var newQty  = current - remaining;   // allow negative
+        item.quantity = newQty;
+        item.qty = newQty;
+        if (item.openingStock != null) item.openingStock = newQty;
+        if (item.stock != null) item.stock = newQty;
+        remaining = 0;   // fully consumed regardless
+      }
+
+      var deducted = ingQty - remaining;
+      if (remaining > 0) shortfalls.push(ingNameStr + ' (short ' + remaining.toFixed(3) + ')');
+
+      // Always record the full required quantity as a consume transaction (even if it goes negative)
+      payload.transactions.push({
+        id: Date.now().toString() + '-adp-' + ci,
+        itemId: ing.itemId || ingNameStr,
+        itemName: ingNameStr,
+        category: cat,
+        type: 'consume',
+        quantity: ingQty,
+        date: productionDate + 'T00:00:00.000Z',
+        requestId: batchId,
+        producedBy: producedBy,
+        enteredBy: adminEmail,
+        batchId: batchId,
+        notes: 'Direct Production: ' + (notes || batchId)
+      });
+    }
+
+    // ── Add to Finished Goods ─────────────────────────────────────────────────
+    var fgArr = Array.isArray(inv.finishedGoods) ? inv.finishedGoods : [];
+    inv.finishedGoods = fgArr;
+    var fgId = '';
+    var fgFound = false;
+    for (var fi = 0; fi < fgArr.length; fi++) {
+      var fg = fgArr[fi];
+      var fgName = (fg.name || fg.itemName || '').toString().trim().toLowerCase();
+      if (fgName === productName.toLowerCase()) {
+        var cur = parseFloat(fg.quantity || fg.qty || fg.openingStock || 0) || 0;
+        fg.quantity = fg.qty = cur + producedQty;
+        fgId = fg.id || fg.itemId || '';
+        fgFound = true;
+        break;
+      }
+    }
+    if (!fgFound) {
+      fgId = 'FG-ADP-' + Date.now();
+      fgArr.push({
+        id: fgId,
+        name: productName,
+        unit: unit,
+        quantity: producedQty,
+        qty: producedQty,
+        openingStock: 0,
+        receivedQuantity: producedQty,
+        consumedQuantity: 0,
+        category: 'finishedGoods'
+      });
+    }
+
+    // Log finished goods addition as a transaction (include itemId for matching)
+    payload.transactions.push({
+      id: Date.now().toString() + '-adp-fg',
+      itemId: fgId,
+      itemName: productName,
+      category: 'finishedGoods',
+      type: 'admin-direct-produce-output',
+      quantity: producedQty,
+      unit: unit,
+      date: productionDate + 'T00:00:00.000Z',
+      requestId: batchId,
+      producedBy: producedBy,
+      enteredBy: adminEmail,
+      batchId: batchId,
+      notes: notes
+    });
+
+    // ── Save back to Database/latest ─────────────────────────────────────────
+    var saveResult = await saveInventory(payload, currentVersion);
+    if (saveResult.result === 'error' && saveResult.code === 'CONFLICT') {
+      return fail(new Error('Inventory was changed by someone else simultaneously. Please refresh and try again.'));
+    }
+    if (saveResult.result !== 'success' && saveResult.status !== 'success') {
+      return fail(new Error(saveResult.error || 'Inventory save failed.'));
+    }
+
+    // ── Create Requisitions_V2 record ─────────────────────────────────────────
+    var reqId = 'ADMIN-' + Date.now();
+    var reqRef = db.collection('Requisitions_V2').doc(reqId);
+    await reqRef.set({
+      RequestID: reqId,
+      Type: 'Admin Direct Production',
+      Status: 'PRODUCED',
+      CurrentStage: 'Admin Direct Production',
+      AdminDirectProduce: true,
+      ProductName: productName,
+      RequestedQty: producedQty,
+      Unit: unit,
+      FormulaID: formulaId,
+      Formulaltems: JSON.stringify(ingredients),
+      ProducedBy: producedBy,
+      AdminEmail: adminEmail,
+      AdminName: adminName,
+      EmployeeEm: adminEmail,
+      EmployeeName: adminName,
+      BatchID: batchId,
+      ProductionDate: productionDate,
+      Notes: notes,
+      CreatedDate: nowIso,
+      IssuedAt: nowIso,
+      Shortfalls: shortfalls.length > 0 ? shortfalls.join('; ') : '',
+      AdditionalItems: '[]',
+      Corrections: '[]',
+      PartialIssuedQty: 0
+    });
+
+    await auditLog('admin_direct_produce', adminEmail, {
+      batchId: batchId,
+      productName: productName,
+      producedQty: producedQty,
+      producedBy: producedBy,
+      shortfalls: shortfalls
+    });
+
+    return ok({
+      reqId: reqId,
+      batchId: batchId,
+      shortfalls: shortfalls,
+      message: shortfalls.length > 0
+        ? 'Production recorded. Note: some ingredients had insufficient stock — ' + shortfalls.join('; ')
+        : 'Production recorded successfully. Inventory updated.'
+    });
+  }
+
+  /**
+   * Undo Admin Direct Production — reverses a production batch:
+   * - Removes finished goods from inventory
+   * - Restores all consumed raw materials
+   * - Deletes the Requisitions_V2 record
+   * - Removes related transactions
+   */
+  async function undoAdminDirectProduce(params) {
+    var batchId = (params.batchId || '').toString().trim();
+    var requestId = (params.requestId || '').toString().trim();
+    if (!batchId) return fail(new Error('Batch ID is required.'));
+
+    var adminId = adminIdentifier(params) || (params.email || '').toLowerCase().trim();
+    var allowed = await hasRole(adminId, ['Admin', 'Manager']);
+    if (!allowed) return fail(new Error('Admin or Manager privileges required to undo production.'));
+
+    // ── Read Database/latest ──────────────────────────────────────────────────
+    var latestRef = db.collection('Database').doc('latest');
+    var snap = await latestRef.get();
+    if (!snap.exists) return fail(new Error('No inventory data found.'));
+    var d = snap.data();
+    var currentVersion = (d.latestId || '').toString();
+    var payload = (d.data != null) ? d.data : d;
+    var inv = (payload && payload.inventory) ? payload.inventory : payload;
+    if (!inv || typeof inv !== 'object') return fail(new Error('Inventory structure not found.'));
+    if (!Array.isArray(payload.transactions)) payload.transactions = [];
+
+    // ── Find all transactions related to this batch ─────────────────────────
+    // Search by batchId first, then fallback to requestId, then notes containing batchId (for legacy records)
+    var batchTxs = payload.transactions.filter(tx => tx.batchId === batchId);
+    if (batchTxs.length === 0 && requestId) {
+      batchTxs = payload.transactions.filter(tx => tx.requestId === requestId);
+    }
+    if (batchTxs.length === 0) {
+      // Legacy: search by notes containing the batchId
+      batchTxs = payload.transactions.filter(tx => {
+        var notes = (tx.notes || '').toString();
+        var reqId = (tx.requestId || '').toString();
+        return notes.indexOf(batchId) >= 0 || reqId.indexOf(batchId) >= 0;
+      });
+    }
+    if (batchTxs.length === 0) return fail(new Error('No transactions found for batch: ' + batchId));
+
+    var fgTx = batchTxs.find(tx => tx.type === 'admin-direct-produce-output');
+    var consumeTxs = batchTxs.filter(tx => tx.type === 'consume');
+
+    // ── Restore consumed raw materials ──────────────────────────────────────
+    for (var ci = 0; ci < consumeTxs.length; ci++) {
+      var tx = consumeTxs[ci];
+      var cat = tx.category || 'rawMaterials';
+      var arr = Array.isArray(inv[cat]) ? inv[cat] : [];
+      var txItemId = (tx.itemId || '').toString().trim();
+      var txItemName = (tx.itemName || '').toString().trim();
+      var txQty = parseFloat(tx.quantity || 0);
+
+      // Find the item and restore quantity (add back what was consumed)
+      for (var ii = 0; ii < arr.length; ii++) {
+        var item = arr[ii];
+        var match = (txItemId && (String(item.id || '') === txItemId || String(item.itemId || '') === txItemId)) ||
+                    (txItemName && (String(item.name || '') === txItemName || String(item.itemName || '') === txItemName));
+        if (!match) continue;
+
+        var current = getInventoryQty(item);
+        var restoredQty = current + txQty;  // add back the consumed amount
+        item.quantity = item.qty = restoredQty;
+        if (item.openingStock != null) item.openingStock = restoredQty;
+        if (item.stock != null) item.stock = restoredQty;
+        break;
+      }
+    }
+
+    // ── Remove finished goods ───────────────────────────────────────────────
+    if (fgTx) {
+      var fgArr = Array.isArray(inv.finishedGoods) ? inv.finishedGoods : [];
+      var fgName = (fgTx.itemName || '').toString().trim();
+      var fgId = (fgTx.itemId || '').toString().trim();
+      var fgQty = parseFloat(fgTx.quantity || 0);
+
+      for (var fi = 0; fi < fgArr.length; fi++) {
+        var fg = fgArr[fi];
+        var match = (fgId && (String(fg.id || '') === fgId || String(fg.itemId || '') === fgId)) ||
+                    (fgName && (String(fg.name || '') === fgName || String(fg.itemName || '') === fgName));
+        if (!match) continue;
+
+        var current = parseFloat(fg.quantity || fg.qty || fg.openingStock || 0) || 0;
+        var newQty = Math.max(0, current - fgQty);  // remove the produced amount (don't go below 0)
+        fg.quantity = fg.qty = newQty;
+        if (fg.openingStock != null) fg.openingStock = newQty;
+        break;
+      }
+    }
+
+    // ── Remove all batch-related transactions ───────────────────────────────
+    // Collect IDs of transactions to remove (handles legacy records without batchId field)
+    var txIdsToRemove = batchTxs.map(tx => tx.id);
+    var beforeCount = payload.transactions.length;
+    payload.transactions = payload.transactions.filter(tx => txIdsToRemove.indexOf(tx.id) === -1);
+    var removedCount = beforeCount - payload.transactions.length;
+
+    // ── Save updated inventory ──────────────────────────────────────────────
+    var saveResult = await saveInventory(payload, currentVersion);
+    if (saveResult.result === 'error' && saveResult.code === 'CONFLICT') {
+      return fail(new Error('Inventory was changed by someone else simultaneously. Please refresh and try again.'));
+    }
+    if (saveResult.result !== 'success' && saveResult.status !== 'success') {
+      return fail(new Error(saveResult.error || 'Inventory save failed.'));
+    }
+
+    // ── Delete Requisitions_V2 record ───────────────────────────────────────
+    if (requestId) {
+      try {
+        await db.collection('Requisitions_V2').doc(requestId).delete();
+      } catch (e) {
+        // Non-fatal: record might already be deleted or not exist
+        console.warn('Could not delete Requisitions_V2 record:', e.message);
+      }
+    }
+
+    await auditLog('undo_admin_direct_produce', adminId, {
+      batchId: batchId,
+      requestId: requestId,
+      transactionsRemoved: removedCount,
+      finishedGood: fgTx ? fgTx.itemName : 'N/A',
+      ingredientsRestored: consumeTxs.length
+    });
+
+    return ok({
+      batchId: batchId,
+      requestId: requestId,
+      transactionsRemoved: removedCount,
+      ingredientsRestored: consumeTxs.length,
+      message: 'Production undone. Finished goods removed, raw materials restored.'
+    });
+  }
+
   var actionHandlers = {
     test_connection: async function () { return ok({ status: 'Online' }); },
     test: async function () { return ok({ status: 'Online' }); },
@@ -3511,7 +3973,11 @@
       }
       var result = await saveInventory(payload, p.baseVersion);
       if (result && (result.status === 'success' || result.result === 'success')) {
-        await auditLog('inventory_sync', p.user || p.userEmail || 'inventory_app', { version: result.version || '' });
+        var saveUser = p.user || p.userEmail || 'system';
+        await auditLog('inventory_sync', saveUser, { version: result.version || '' });
+        // Snapshot this version for history (fire-and-forget — non-blocking)
+        saveVersionSnapshot(result.version || Date.now().toString(), payload, saveUser)
+          .catch(function(e) { console.warn('Version snapshot failed', e); });
       }
       return result;
     },
@@ -3567,7 +4033,79 @@
     mark_stock_adjustment_done: markStockAdjustmentDone,
     consume_requisition_material: async function (p) {
       if (!p.reqId || !p.itemName) return fail(new Error('reqId and itemName required'));
-      return ok({ message: 'Recorded (Firebase)', remaining: 0 });
+      var qty = parseFloat(p.quantity);
+      if (!qty || qty <= 0) return fail(new Error('Valid quantity required'));
+      var category = (p.category || 'rawMaterials').toString();
+      var operator = (p.operator || p.user || 'Store').toString();
+      var notes = (p.notes || '').toString();
+
+      // 1. Deduct from Database/latest inventory
+      var latestRef = db.collection('Database').doc('latest');
+      var snap = await latestRef.get();
+      if (!snap.exists) return fail(new Error('No inventory data. Add stock in Main Inventory first.'));
+      var d = snap.data();
+      var currentVersion = (d.latestId || '').toString();
+      var payload = (d.data != null) ? d.data : d;
+      var inv = (payload && payload.inventory) ? payload.inventory : payload;
+      if (!inv || typeof inv !== 'object') return fail(new Error('Inventory structure not found.'));
+
+      var arr = inv[category];
+      var remaining = qty;
+      var itemIdStr = (p.itemId != null ? String(p.itemId) : '').trim();
+      var itemNameStr = p.itemName.toString().trim();
+      if (Array.isArray(arr)) {
+        for (var i = 0; i < arr.length && remaining > 0; i++) {
+          var item = arr[i];
+          var match = (itemIdStr && (String(item.id || '') === itemIdStr || String(item.itemId || '') === itemIdStr)) ||
+            (itemNameStr && (String(item.name || '') === itemNameStr || String(item.itemName || '') === itemNameStr));
+          if (!match) continue;
+          var current = parseFloat(item.quantity || item.qty || 0) || 0;
+          var deduct = Math.min(remaining, current);
+          item.quantity = item.qty = Math.max(0, current - deduct);
+          remaining -= deduct;
+        }
+      }
+      var deducted = qty - remaining;
+      if (deducted > 0) {
+        if (!Array.isArray(payload.transactions)) payload.transactions = [];
+        payload.transactions.push({
+          id: Date.now().toString() + '-cq',
+          itemId: p.itemId || p.itemName,
+          itemName: p.itemName,
+          category: category,
+          type: 'requisition-consume',
+          quantity: deducted,
+          date: new Date().toISOString().split('T')[0] + 'T00:00:00.000Z',
+          requestId: p.reqId,
+          operator: operator,
+          notes: notes
+        });
+        var saveResult = await saveInventory(payload, currentVersion);
+        if (saveResult.result === 'error' && saveResult.code === 'CONFLICT') {
+          return fail(new Error('Inventory was changed by someone else. Refresh and try again.'));
+        }
+        if (saveResult.result !== 'success' && saveResult.status !== 'success') {
+          return fail(new Error(saveResult.error || 'Deduction failed'));
+        }
+      }
+
+      // 2. Update the requisition document status
+      try {
+        var reqRef = db.collection('Requisitions_V2').doc(String(p.reqId).replace(/\//g, '_'));
+        var reqSnap = await reqRef.get();
+        if (reqSnap.exists) {
+          await reqRef.update({
+            LastConsumedAt: new Date().toISOString(),
+            LastConsumedBy: operator,
+            LastConsumedItem: p.itemName,
+            LastConsumedQty: deducted
+          });
+        }
+      } catch (e) {
+        // Non-fatal: inventory was already updated
+      }
+
+      return ok({ message: 'Material consumed and inventory updated.', deducted: deducted, remaining: remaining });
     },
     request_dispatch: requestDispatch,
     edit_dispatch: editDispatch,
@@ -3588,6 +4126,8 @@
     delete_request: deleteRequest,
     admin_override: adminOverride,
     admin_force_action: adminForceAction,
+    admin_direct_produce: adminDirectProduce,
+    undo_admin_direct_produce: undoAdminDirectProduce,
     submit_stock_adjustment_request: async function (p) {
       var id = 'SAR-' + Date.now();
       await db.collection('StockAdjustmentRequests').doc(id).set({
@@ -3749,7 +4289,10 @@
     notify_stock_arrival: notifyStockArrival,
     sync_wip_to_req: syncWipToReq,
     save_wip_batch: saveWipBatch,
-    mark_used: markUsed
+    mark_used: markUsed,
+    get_versions: getVersions,
+    get_version_data: getVersionData,
+    restore_version: restoreVersion
   };
 
   async function callBackend(action, params) {
