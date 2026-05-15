@@ -1017,7 +1017,7 @@
                     { id: 'request-new-formula', label: 'Request New Formula', icon: '🧪' }
                 ],
                 'Manager': [...managerAdminTabs.slice(0, 6), { id: 'dispatch-from-stock', label: 'Dispatch from Stock', icon: '📤' }, { id: 'stock-count-requests', label: 'Stock Count', icon: '🔢' }, ...managerAdminTabs.slice(6)],
-                'Admin': [...managerAdminTabs.slice(0, 6), { id: 'dispatch-from-stock', label: 'Dispatch from Stock', icon: '📤' }, { id: 'stock-count-requests', label: 'Stock Count', icon: '🔢' }, ...managerAdminTabs.slice(6)]
+                'Admin': [...managerAdminTabs.slice(0, 6), { id: 'dispatch-from-stock', label: 'Dispatch from Stock', icon: '📤' }, { id: 'stock-count-requests', label: 'Stock Count', icon: '🔢' }, ...managerAdminTabs.slice(6), { id: 'admin-direct-produce', label: 'Direct Produce', icon: '⚡' }]
             };
 
             const tabs = portals[role] || [];
@@ -1228,6 +1228,9 @@
                     break;
                 case 'admin-control':
                     renderAdminControl();
+                    break;
+                case 'admin-direct-produce':
+                    renderAdminDirectProduce();
                     break;
                 case 'stock-count-requests':
                     renderStockCountRequests();
@@ -6578,6 +6581,595 @@
                 }
             } catch (e) {
                 showToast(CRITICAL_ACTION_RETRY_MSG, 'warning');
+            }
+        }
+
+        // ==========================================
+        // ADMIN DIRECT PRODUCE VIEW
+        // ==========================================
+        async function renderAdminDirectProduce() {
+            const contentArea = document.getElementById('contentArea');
+            contentArea.innerHTML = `
+                <div class="fade-in max-w-5xl mx-auto pb-10">
+
+                    <!-- Header -->
+                    <div class="flex items-center gap-4 mb-6">
+                        <div class="w-12 h-12 rounded-2xl bg-gradient-to-br from-blue-600 to-indigo-700 flex items-center justify-center text-2xl shadow-lg flex-shrink-0">⚡</div>
+                        <div class="flex-1">
+                            <h2 class="text-2xl font-black text-gray-800">Admin Direct Produce</h2>
+                            <p class="text-gray-400 text-sm mt-0.5">Bypass all approval stages — deducts materials &amp; records finished goods immediately.</p>
+                        </div>
+                        <span class="px-3 py-1.5 bg-red-50 text-red-600 border border-red-200 rounded-xl text-xs font-black uppercase tracking-widest">Admin Only</span>
+                    </div>
+
+                    <!-- Tabs -->
+                    <div class="flex gap-1 mb-4 bg-gray-100 p-1 rounded-xl w-fit">
+                        <button id="adpTabNewBtn" onclick="adpSwitchTab('new')" class="px-5 py-2 rounded-lg text-sm font-black transition-all bg-white text-blue-700 shadow-sm">
+                            ⚡ New Production
+                        </button>
+                        <button id="adpTabHistoryBtn" onclick="adpSwitchTab('history')" class="px-5 py-2 rounded-lg text-sm font-black transition-all text-gray-500 hover:text-gray-700">
+                            📋 History
+                        </button>
+                    </div>
+
+                    <!-- Tab: New Production Form -->
+                    <div id="adpTabNew" class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+
+                        <!-- Section: Product -->
+                        <div class="p-6 border-b border-gray-50">
+                            <p class="text-xs font-black text-blue-600 uppercase tracking-widest mb-4">① Product &amp; Output</p>
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <div>
+                                    <label class="block text-xs font-semibold text-gray-500 mb-1.5">Formula / Product <span class="text-red-500">*</span></label>
+                                    <div class="flex gap-2">
+                                        <select id="adpProductSelect" onchange="adpOnProductChange()" class="flex-1 px-3 py-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm font-semibold text-gray-800 outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500">
+                                            <option value="">Loading...</option>
+                                        </select>
+                                        <button onclick="adpLoadFormulas()" class="px-3 py-2.5 bg-gray-100 border border-gray-200 rounded-xl hover:bg-gray-200 text-gray-500 font-bold text-sm" title="Refresh">↻</button>
+                                    </div>
+                                    <input type="text" id="adpProductName" placeholder="Or type product name manually" class="mt-2 w-full px-3 py-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm font-semibold text-gray-700 outline-none focus:ring-2 focus:ring-blue-500" />
+                                </div>
+                                <div class="grid grid-cols-2 gap-3">
+                                    <div>
+                                        <label class="block text-xs font-semibold text-gray-500 mb-1.5">Qty Produced <span class="text-red-500">*</span></label>
+                                        <input type="number" id="adpQty" min="0.001" step="any" placeholder="0" oninput="adpScaleIngredients()" class="w-full px-3 py-2.5 bg-gray-50 border border-gray-200 rounded-xl font-black text-blue-700 text-base outline-none focus:ring-2 focus:ring-blue-500" />
+                                    </div>
+                                    <div>
+                                        <label class="block text-xs font-semibold text-gray-500 mb-1.5">Unit</label>
+                                        <input type="text" id="adpUnit" placeholder="kg / L / pcs" class="w-full px-3 py-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm font-semibold text-gray-600 outline-none focus:ring-2 focus:ring-blue-500" />
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Section: Operator -->
+                        <div class="p-6 border-b border-gray-50">
+                            <p class="text-xs font-black text-blue-600 uppercase tracking-widest mb-4">② Operator &amp; Batch Info</p>
+                            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                                <div class="lg:col-span-2">
+                                    <label class="block text-xs font-semibold text-gray-500 mb-1.5">Produced By (Operator) <span class="text-red-500">*</span></label>
+                                    <input type="text" id="adpProducedBy" placeholder="Name of person who physically produced this" class="w-full px-3 py-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm font-semibold text-gray-800 outline-none focus:ring-2 focus:ring-blue-500" />
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-semibold text-gray-500 mb-1.5">Production Date</label>
+                                    <input type="date" id="adpDate" class="w-full px-3 py-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm font-semibold text-gray-800 outline-none focus:ring-2 focus:ring-blue-500" />
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-semibold text-gray-500 mb-1.5">Batch ID</label>
+                                    <input type="text" id="adpBatchId" class="w-full px-3 py-2.5 bg-gray-50 border border-gray-200 rounded-xl font-mono text-xs text-gray-600 outline-none focus:ring-2 focus:ring-blue-500" />
+                                </div>
+                            </div>
+                            <div class="mt-3">
+                                <label class="block text-xs font-semibold text-gray-500 mb-1.5">Notes / Remarks</label>
+                                <input type="text" id="adpNotes" placeholder="Optional batch notes..." class="w-full px-3 py-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm text-gray-600 outline-none focus:ring-2 focus:ring-blue-500" />
+                            </div>
+                        </div>
+
+                        <!-- Section: Ingredients -->
+                        <div class="p-6 border-b border-gray-50">
+                            <div class="flex items-center justify-between mb-4">
+                                <p class="text-xs font-black text-blue-600 uppercase tracking-widest">③ Ingredients to Deduct</p>
+                                <button onclick="adpAddIngredientRow()" class="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 text-white rounded-lg text-xs font-black hover:bg-blue-700 transition-colors">
+                                    + Add Row
+                                </button>
+                            </div>
+                            <div class="rounded-xl border border-gray-200 overflow-hidden">
+                                <table class="w-full text-sm">
+                                    <thead>
+                                        <tr class="bg-gray-50 border-b border-gray-200">
+                                            <th class="px-4 py-2.5 text-left text-xs font-black text-gray-500 uppercase tracking-wide">Item Name</th>
+                                            <th class="px-3 py-2.5 text-left text-xs font-black text-gray-500 uppercase tracking-wide w-36">Category</th>
+                                            <th class="px-3 py-2.5 text-right text-xs font-black text-gray-500 uppercase tracking-wide w-28">In Stock</th>
+                                            <th class="px-3 py-2.5 text-right text-xs font-black text-gray-500 uppercase tracking-wide w-28">Qty to Use</th>
+                                            <th class="px-3 py-2.5 text-left text-xs font-black text-gray-500 uppercase tracking-wide w-16">Unit</th>
+                                            <th class="px-2 py-2.5 w-8"></th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="adpIngTable">
+                                        <tr id="adpEmptyRow"><td colspan="6" class="px-4 py-8 text-center text-gray-400 text-sm">Select a formula above to auto-fill ingredients, or click + Add Row to enter manually.</td></tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+
+                        <!-- Submit -->
+                        <div class="p-6">
+                            <div id="adpResultMsg" class="hidden mb-4"></div>
+                            <div class="flex gap-3">
+                                <button onclick="adpSubmit()" id="adpSubmitBtn" class="flex-1 py-3 bg-gradient-to-r from-blue-600 to-indigo-600 text-white rounded-xl font-black text-base hover:from-blue-700 hover:to-indigo-700 shadow-md transition-all">
+                                    ⚡ Record Direct Production
+                                </button>
+                                <button onclick="adpReset()" class="px-6 py-3 bg-gray-100 text-gray-600 rounded-xl font-bold hover:bg-gray-200 transition-all text-sm">
+                                    Reset
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Tab: History -->
+                    <div id="adpTabHistory" class="hidden bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+                        <div class="flex items-center justify-between gap-3 px-6 py-4 border-b border-gray-100 flex-wrap">
+                            <h3 class="font-black text-gray-700">📋 Recent Direct Productions</h3>
+                            <div class="flex items-center gap-2 flex-1 min-w-0 max-w-sm">
+                                <div class="relative flex-1">
+                                    <span class="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm">🔍</span>
+                                    <input type="text" id="adpHistorySearch" oninput="adpFilterHistory()" placeholder="Search product or operator..." class="w-full pl-8 pr-3 py-1.5 bg-gray-50 border border-gray-200 rounded-lg text-xs font-semibold text-gray-700 outline-none focus:ring-2 focus:ring-blue-400" />
+                                </div>
+                                <button onclick="adpLoadHistory()" class="text-xs font-bold text-blue-600 hover:underline whitespace-nowrap">Refresh</button>
+                            </div>
+                        </div>
+                        <div id="adpHistoryContainer"><p class="text-gray-400 text-sm text-center py-8">Loading...</p></div>
+                    </div>
+                </div>
+            `;
+
+            document.getElementById('adpDate').value = new Date().toISOString().split('T')[0];
+            document.getElementById('adpBatchId').value = 'ADMIN-BATCH-' + Date.now();
+
+            await adpLoadFormulas();
+
+            window.adpSwitchTab = function(tab) {
+                const isHistory = tab === 'history';
+                document.getElementById('adpTabNew').classList.toggle('hidden', isHistory);
+                document.getElementById('adpTabHistory').classList.toggle('hidden', !isHistory);
+                document.getElementById('adpTabNewBtn').className = isHistory
+                    ? 'px-5 py-2 rounded-lg text-sm font-black transition-all text-gray-500 hover:text-gray-700'
+                    : 'px-5 py-2 rounded-lg text-sm font-black transition-all bg-white text-blue-700 shadow-sm';
+                document.getElementById('adpTabHistoryBtn').className = isHistory
+                    ? 'px-5 py-2 rounded-lg text-sm font-black transition-all bg-white text-blue-700 shadow-sm'
+                    : 'px-5 py-2 rounded-lg text-sm font-black transition-all text-gray-500 hover:text-gray-700';
+                if (isHistory) adpLoadHistory();
+            };
+        }
+
+        // ── ADP: helper — resolve item from inventory by itemId across categories ──
+        function adpFindItem(inv, category, itemId, itemName) {
+            const cats = category ? [category, 'rawMaterials', 'packingMaterials', 'labels', 'finishedGoods'].filter((c,i,a)=>a.indexOf(c)===i) : ['rawMaterials', 'packingMaterials', 'labels', 'finishedGoods'];
+            for (const cat of cats) {
+                const arr = Array.isArray(inv[cat]) ? inv[cat] : [];
+                if (itemId != null && itemId !== '') {
+                    // eslint-disable-next-line eqeqeq
+                    const byId = arr.find(i => i.id == itemId || i.itemId == itemId || String(i.id) === String(itemId));
+                    if (byId) { console.log('[adpFindItem] found by id', itemId, 'in', cat, byId.name); return byId; }
+                }
+                if (itemName) {
+                    const n = itemName.toString().trim().toLowerCase();
+                    const byName = arr.find(i => (i.name || i.itemName || '').toString().trim().toLowerCase() === n);
+                    if (byName) { console.log('[adpFindItem] found by name', itemName, 'in', cat, byName.name); return byName; }
+                }
+            }
+            console.warn('[adpFindItem] NOT FOUND — itemId:', itemId, 'itemName:', itemName, 'cats searched:', cats);
+            return null;
+        }
+
+        // ── ADP: load formulas from Database/latest ───────────────────────────
+        async function adpLoadFormulas() {
+            const sel = document.getElementById('adpProductSelect');
+            if (!sel) return;
+            sel.innerHTML = '<option value="">Loading...</option>';
+            try {
+                const data = await callBackend('get_db', {});
+                const payload = (data && data.data) ? data.data : data;
+                const formulas = Array.isArray(payload && payload.formulas) ? payload.formulas : [];
+                const fgItems  = (payload && payload.inventory && Array.isArray(payload.inventory.finishedGoods))
+                    ? payload.inventory.finishedGoods : [];
+
+                window._adpPayload = payload; // cache full payload for item lookup
+
+                let opts = '<option value="">— Select a formula / product —</option>';
+                if (formulas.length > 0) {
+                    opts += '<optgroup label="📋 Formulas">';
+                    formulas.forEach(f => {
+                        const escapedName = (f.name || 'Unnamed').replace(/"/g, '&quot;');
+                        const escapedUnit = (f.outputUnit || f.unit || '').replace(/"/g, '&quot;');
+                        opts += `<option value="formula:${f.id}" data-formula-idx="${formulas.indexOf(f)}" data-name="${escapedName}" data-unit="${escapedUnit}" data-output-qty="${f.outputQty || 1}">${f.name || 'Unnamed'}</option>`;
+                    });
+                    opts += '</optgroup>';
+                }
+                if (fgItems.length > 0) {
+                    opts += '<optgroup label="📦 Existing Finished Goods">';
+                    fgItems.forEach(fg => {
+                        const stock = parseFloat(fg.quantity || fg.qty || 0).toFixed(2);
+                        const escapedName = (fg.name || 'Unnamed').replace(/"/g, '&quot;');
+                        const escapedUnit = (fg.unit || '').replace(/"/g, '&quot;');
+                        opts += `<option value="fg:${fg.id||fg.name}" data-name="${escapedName}" data-unit="${escapedUnit}">` +
+                                `${fg.name || 'Unnamed'} — stock: ${stock} ${fg.unit || ''}</option>`;
+                    });
+                    opts += '</optgroup>';
+                }
+                if (formulas.length === 0 && fgItems.length === 0) {
+                    opts += '<option value="" disabled>No formulas found — type product name manually below</option>';
+                }
+                sel.innerHTML = opts;
+            } catch (e) {
+                sel.innerHTML = '<option value="">Error loading — type manually</option>';
+                showToast('Could not load formulas: ' + (e.message || e), 'warning');
+            }
+        }
+
+        // ── ADP: when product dropdown changes ────────────────────────────────
+        function adpOnProductChange() {
+            const sel = document.getElementById('adpProductSelect');
+            if (!sel || !sel.value) return;
+            const opt = sel.options[sel.selectedIndex];
+            const name = opt.dataset.name || '';
+            const unit = opt.dataset.unit || '';
+            if (document.getElementById('adpProductName')) document.getElementById('adpProductName').value = name;
+            if (document.getElementById('adpUnit') && unit) document.getElementById('adpUnit').value = unit;
+
+            if (sel.value.startsWith('formula:')) {
+                const idx = parseInt(opt.dataset.formulaIdx, 10);
+                const payload = window._adpPayload;
+                const formulas = (payload && Array.isArray(payload.formulas)) ? payload.formulas : [];
+                const formula = formulas[idx] || formulas.find(f => String(f.id) === sel.value.replace('formula:', ''));
+                if (formula) {
+                    const targetQty = parseFloat(document.getElementById('adpQty').value) || parseFloat(opt.dataset.outputQty) || 1;
+                    if (document.getElementById('adpQty') && !document.getElementById('adpQty').value) {
+                        document.getElementById('adpQty').value = formula.outputQty || '';
+                    }
+                    adpPopulateIngredients(formula, targetQty);
+                }
+            }
+        }
+
+        // ── ADP: read effective closing stock pre-computed by getDb() backend ───────
+        function adpGetStock(item) {
+            if (!item) return 0;
+            // _effectiveStock is computed in getDb() using the exact same logic as
+            // calculateStock() in the main inventory — it equals "Closing (Phy)".
+            if (item._effectiveStock != null) return item._effectiveStock;
+            // Fallback for older cached payloads
+            if (item.openingStock != null) return parseFloat(item.openingStock) || 0;
+            if (item.quantity != null) return parseFloat(item.quantity) || 0;
+            return 0;
+        }
+
+        // ── ADP: populate ingredient table — resolves name/unit/stock via itemId ─
+        function adpPopulateIngredients(formula, targetQty) {
+            const tbody = document.getElementById('adpIngTable');
+            if (!tbody) return;
+            const payload = window._adpPayload;
+            const inv = (payload && payload.inventory) ? payload.inventory : {};
+            const outputQty = parseFloat(formula.outputQty) || 1;
+            const scale = (targetQty && outputQty) ? (targetQty / outputQty) : 1;
+
+            // Build unified list: ingredients (rawMaterials) + packingMaterials + labels
+            const allRows = [];
+            const addGroup = (list, defaultCat) => {
+                if (!Array.isArray(list)) return;
+                list.forEach(ing => {
+                    const cat = ing.category || defaultCat;
+                    const ingName = ing.name || ing.itemName || '';
+                    const item = adpFindItem(inv, cat, ing.itemId, ingName);
+                    const name = item ? (item.name || '') : ingName;
+                    const unit = item ? (item.unit || '') : (ing.unit || '');
+                    const currentStock = item ? adpGetStock(item) : 0;
+                    const reqQty = parseFloat(ing.quantity || ing.qty || 0) * scale;
+                    allRows.push({ name, cat, itemId: ing.itemId, unit, currentStock, reqQty });
+                });
+            };
+            addGroup(formula.ingredients, 'rawMaterials');
+            addGroup(formula.packingMaterials, 'packingMaterials');
+            addGroup(formula.labels, 'labels');
+
+            if (allRows.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="6" class="px-4 py-6 text-center text-gray-400 text-sm">No ingredients found in this formula.</td></tr>';
+                return;
+            }
+
+            tbody.innerHTML = allRows.map((row, idx) => {
+                const insufficient = row.currentStock < row.reqQty;
+                const stockColor   = insufficient ? 'text-red-600 font-bold' : 'text-emerald-600 font-semibold';
+                const stockIcon    = insufficient ? '⚠' : '✓';
+                const catLabel = { rawMaterials: 'Raw Material', packingMaterials: 'Packing', labels: 'Labels' }[row.cat] || row.cat;
+                const safeName = row.name.replace(/"/g, '&quot;');
+                return `
+                    <tr class="border-t border-gray-100 hover:bg-blue-50/30 transition-colors" id="adp-ing-row-${idx}">
+                        <td class="px-4 py-2.5">
+                            <input type="text" value="${safeName}" class="adp-ing-name w-full bg-transparent text-sm font-semibold text-gray-800 outline-none focus:bg-blue-50 rounded px-1 py-0.5 border-b border-transparent focus:border-blue-300" data-item-id="${row.itemId || ''}" />
+                        </td>
+                        <td class="px-3 py-2.5">
+                            <select class="adp-ing-cat w-full bg-transparent text-xs font-semibold text-gray-500 outline-none rounded border border-gray-200 px-1 py-0.5">
+                                <option value="rawMaterials" ${row.cat==='rawMaterials'?'selected':''}>Raw Material</option>
+                                <option value="packingMaterials" ${row.cat==='packingMaterials'?'selected':''}>Packing</option>
+                                <option value="labels" ${row.cat==='labels'?'selected':''}>Labels</option>
+                            </select>
+                        </td>
+                        <td class="px-3 py-2.5 text-right text-xs ${stockColor}">${stockIcon} ${row.currentStock.toFixed(3)}</td>
+                        <td class="px-3 py-2.5 text-right">
+                            <input type="number" value="${row.reqQty.toFixed(4)}" min="0" step="any" class="adp-ing-qty w-24 text-right bg-gray-50 border border-gray-200 rounded-lg px-2 py-1 font-black text-blue-700 outline-none focus:ring-2 focus:ring-blue-400 text-sm" />
+                        </td>
+                        <td class="px-3 py-2.5 text-xs text-gray-500 font-medium">${row.unit}</td>
+                        <td class="px-2 py-2.5 text-center">
+                            <button onclick="document.getElementById('adp-ing-row-${idx}').remove()" class="text-gray-300 hover:text-red-500 text-base font-black leading-none">&times;</button>
+                        </td>
+                    </tr>
+                `;
+            }).join('');
+        }
+
+        // ── ADP: scale ingredients when produced qty changes ──────────────────
+        function adpScaleIngredients() {
+            const sel = document.getElementById('adpProductSelect');
+            if (!sel || !sel.value || !sel.value.startsWith('formula:')) return;
+            const opt = sel.options[sel.selectedIndex];
+            const idx = parseInt(opt.dataset.formulaIdx, 10);
+            const payload = window._adpPayload;
+            if (!payload) return;
+            const formulas = Array.isArray(payload.formulas) ? payload.formulas : [];
+            const formula = formulas[idx] || formulas.find(f => String(f.id) === sel.value.replace('formula:', ''));
+            if (!formula) return;
+            const targetQty = parseFloat(document.getElementById('adpQty').value) || 0;
+            if (targetQty > 0) adpPopulateIngredients(formula, targetQty);
+        }
+
+        // ── ADP: add a blank ingredient row manually ──────────────────────────
+        function adpAddIngredientRow() {
+            const tbody = document.getElementById('adpIngTable');
+            if (!tbody) return;
+            const emptyRow = document.getElementById('adpEmptyRow');
+            if (emptyRow) emptyRow.remove();
+            const idx = Date.now();
+            tbody.insertAdjacentHTML('beforeend', `
+                <tr class="border-t border-gray-100 hover:bg-blue-50/30 transition-colors" id="adp-ing-row-${idx}">
+                    <td class="px-4 py-2.5">
+                        <input type="text" placeholder="Item name" class="adp-ing-name w-full bg-gray-50 border border-gray-200 text-sm font-semibold text-gray-800 outline-none focus:bg-blue-50 rounded px-2 py-1" data-item-id="" />
+                    </td>
+                    <td class="px-3 py-2.5">
+                        <select class="adp-ing-cat w-full bg-transparent text-xs font-semibold text-gray-500 outline-none rounded border border-gray-200 px-1 py-0.5">
+                            <option value="rawMaterials">Raw Material</option>
+                            <option value="packingMaterials">Packing</option>
+                            <option value="labels">Labels</option>
+                        </select>
+                    </td>
+                    <td class="px-3 py-2.5 text-right text-xs text-gray-400">—</td>
+                    <td class="px-3 py-2.5 text-right">
+                        <input type="number" value="0" min="0" step="any" class="adp-ing-qty w-24 text-right bg-gray-50 border border-gray-200 rounded-lg px-2 py-1 font-black text-blue-700 outline-none focus:ring-2 focus:ring-blue-400 text-sm" />
+                    </td>
+                    <td class="px-3 py-2.5 text-xs text-gray-400"></td>
+                    <td class="px-2 py-2.5 text-center">
+                        <button onclick="this.closest('tr').remove()" class="text-gray-300 hover:text-red-500 text-base font-black leading-none">&times;</button>
+                    </td>
+                </tr>
+            `);
+        }
+
+        // ── ADP: reset the form ───────────────────────────────────────────────
+        function adpReset() {
+            const sel = document.getElementById('adpProductSelect');
+            if (sel) sel.value = '';
+            ['adpProductName','adpQty','adpUnit','adpProducedBy','adpNotes'].forEach(id => {
+                const el = document.getElementById(id);
+                if (el) el.value = '';
+            });
+            document.getElementById('adpDate').value = new Date().toISOString().split('T')[0];
+            document.getElementById('adpBatchId').value = 'ADMIN-BATCH-' + Date.now();
+            const tbody = document.getElementById('adpIngTable');
+            if (tbody) tbody.innerHTML = '<tr id="adpEmptyRow"><td colspan="6" class="px-4 py-8 text-center text-gray-400 text-sm">Select a formula above to auto-fill ingredients, or click + Add Row.</td></tr>';
+            const msg = document.getElementById('adpResultMsg');
+            if (msg) { msg.className = 'hidden'; msg.innerHTML = ''; }
+        }
+
+        // ── ADP: submit direct production ─────────────────────────────────────
+        async function adpSubmit() {
+            const btn = document.getElementById('adpSubmitBtn');
+            const msgEl = document.getElementById('adpResultMsg');
+
+            const productName = (document.getElementById('adpProductName').value || '').trim();
+            const producedQty = parseFloat(document.getElementById('adpQty').value);
+            const unit        = (document.getElementById('adpUnit').value || '').trim();
+            const producedBy  = (document.getElementById('adpProducedBy').value || '').trim();
+            const prodDate    = document.getElementById('adpDate').value;
+            const batchId     = (document.getElementById('adpBatchId').value || '').trim();
+            const notes       = (document.getElementById('adpNotes').value || '').trim();
+
+            if (!productName) { showToast('Enter or select a product name.', 'warning'); return; }
+            if (!producedQty || producedQty <= 0) { showToast('Enter a valid quantity.', 'warning'); return; }
+            if (!producedBy) { showToast('Enter the name of the person who produced this batch.', 'warning'); return; }
+
+            // Collect ingredients from table
+            const ingredients = [];
+            document.querySelectorAll('#adpIngTable tr').forEach(row => {
+                const nameEl = row.querySelector('.adp-ing-name');
+                const catEl  = row.querySelector('.adp-ing-cat');
+                const qtyEl  = row.querySelector('.adp-ing-qty');
+                if (!nameEl || !qtyEl) return;
+                const name = (nameEl.value || '').trim();
+                const qty  = parseFloat(qtyEl.value);
+                const cat  = catEl ? catEl.value : 'rawMaterials';
+                if (!name || !qty || qty <= 0) return;
+                ingredients.push({
+                    itemId: nameEl.dataset.itemId || '',
+                    itemName: name,
+                    category: cat,
+                    quantity: qty
+                });
+            });
+
+            btn.disabled = true;
+            btn.textContent = 'Recording...';
+            msgEl.className = 'hidden';
+
+            try {
+                const data = await callBackendPost('admin_direct_produce', {
+                    email: currentUser.email,
+                    user: currentUser.name,
+                    adminUid: currentUser.uid || '',
+                    productName,
+                    producedQty,
+                    unit,
+                    producedBy,
+                    productionDate: prodDate,
+                    batchId,
+                    notes,
+                    ingredients: JSON.stringify(ingredients)
+                });
+
+                if (data.result === 'success') {
+                    const hasShortfalls = data.shortfalls && data.shortfalls.length > 0;
+                    const shortfallItems = hasShortfalls ? data.shortfalls.map(s => `<li class="mt-0.5">⚠ ${s}</li>`).join('') : '';
+                    msgEl.className = `p-4 rounded-2xl text-sm font-semibold ${hasShortfalls ? 'bg-amber-50 text-amber-800 border border-amber-200' : 'bg-green-50 text-green-800 border border-green-200'}`;
+                    msgEl.innerHTML = `
+                        <p class="font-black text-base mb-1">${hasShortfalls ? '⚠️ Production Recorded — Some Stock Was Short' : '✅ Production Recorded Successfully!'}</p>
+                        <p class="mt-1 font-bold ${hasShortfalls ? 'text-amber-700' : 'text-green-700'}">✅ Inventory has been updated in Firebase.</p>
+                        ${hasShortfalls ? `<p class="mt-1 text-xs">Items with insufficient stock were partially deducted (whatever was available). Shortfalls:</p><ul class="list-none mt-1 text-xs font-semibold">${shortfallItems}</ul><p class="mt-1.5 text-xs text-amber-600 font-bold">You can adjust these manually in the Main Inventory app.</p>` : ''}
+                        <p class="mt-2 text-xs">Batch ID: <strong>${data.batchId}</strong> &nbsp;|&nbsp; Req ID: <strong>${data.reqId}</strong></p>
+                        <p class="text-xs mt-1">Produced by: <strong>${producedBy}</strong> &nbsp;|&nbsp; Date: <strong>${prodDate}</strong> &nbsp;|&nbsp; Qty: <strong>${producedQty} ${unit}</strong></p>
+                    `;
+                    // Generate a new batch ID for the next run
+                    document.getElementById('adpBatchId').value = 'ADMIN-BATCH-' + Date.now();
+                    // Refresh _adpPayload so next production shows updated IN STOCK values
+                    try {
+                        const freshDb = await callBackend('get_db', {});
+                        if (freshDb && freshDb.result === 'success' && freshDb.data) {
+                            window._adpPayload = freshDb.data;
+                        }
+                    } catch(e) { /* non-fatal */ }
+                    await adpLoadHistory();
+                    invalidateViewCache(true);
+                    showToast(hasShortfalls ? '⚠️ Recorded with shortfalls — inventory updated, check warnings.' : '✅ Direct production recorded! Inventory updated.', hasShortfalls ? 'warning' : 'success');
+                } else {
+                    msgEl.className = 'p-4 rounded-2xl text-sm font-semibold bg-red-50 text-red-800 border border-red-200';
+                    msgEl.innerHTML = `<p class="font-black">❌ Failed</p><p>${userFriendlyError(data.error)}</p>`;
+                    showToast(userFriendlyError(data.error), 'error');
+                }
+            } catch (e) {
+                msgEl.className = 'p-4 rounded-2xl text-sm font-semibold bg-red-50 text-red-800 border border-red-200';
+                msgEl.innerHTML = `<p class="font-black">❌ Network/Firebase Error</p><p>${e.message || e}</p>`;
+                showToast(CRITICAL_ACTION_RETRY_MSG, 'warning');
+            } finally {
+                btn.disabled = false;
+                btn.textContent = '⚡ Record Direct Production';
+                msgEl.classList.remove('hidden');
+            }
+        }
+
+        // ── ADP: cached records for filtering ────────────────────────────────
+        var _adpAllRecords = [];
+
+        // ── ADP: render history table from given records ──────────────────────
+        function adpRenderHistoryTable(records) {
+            const container = document.getElementById('adpHistoryContainer');
+            if (!container) return;
+            if (records.length === 0) {
+                container.innerHTML = '<p class="text-gray-400 text-sm text-center py-6">No matching records found.</p>';
+                return;
+            }
+            container.innerHTML = `
+                <div class="overflow-x-auto">
+                    <table class="w-full text-sm">
+                        <thead>
+                            <tr class="bg-gray-50 border-b border-gray-200">
+                                <th class="px-4 py-2.5 text-left text-xs font-black text-gray-500 uppercase">Date</th>
+                                <th class="px-4 py-2.5 text-left text-xs font-black text-gray-500 uppercase">Product</th>
+                                <th class="px-3 py-2.5 text-right text-xs font-black text-gray-500 uppercase">Qty</th>
+                                <th class="px-3 py-2.5 text-left text-xs font-black text-gray-500 uppercase">Produced By</th>
+                                <th class="px-3 py-2.5 text-left text-xs font-black text-gray-500 uppercase">Batch ID</th>
+                                <th class="px-3 py-2.5 text-left text-xs font-black text-gray-500 uppercase">Entered By</th>
+                                <th class="px-3 py-2.5 text-left text-xs font-black text-gray-500 uppercase">Notes</th>
+                                <th class="px-3 py-2.5 text-center text-xs font-black text-gray-500 uppercase">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${records.map(r => `
+                                <tr class="border-t border-gray-100 hover:bg-gray-50">
+                                    <td class="px-4 py-2.5 text-gray-500 text-xs whitespace-nowrap">${(r.productionDate || r.date || '').split('T')[0] || '—'}</td>
+                                    <td class="px-4 py-2.5 font-semibold text-gray-800">${r.productName || '—'}</td>
+                                    <td class="px-3 py-2.5 text-right font-black text-blue-700 whitespace-nowrap">${r.quantity != null ? r.quantity : '—'} ${r.unit || ''}</td>
+                                    <td class="px-3 py-2.5 font-semibold text-emerald-700">${r.producedBy || '—'}</td>
+                                    <td class="px-3 py-2.5 font-mono text-xs text-gray-500">${r.batchId || '—'}</td>
+                                    <td class="px-3 py-2.5 text-xs text-gray-400">${r.adminName || r.adminEmail || r.requesterName || '—'}</td>
+                                    <td class="px-3 py-2.5 text-xs text-gray-400">${r.remarks || ''}</td>
+                                    <td class="px-3 py-2.5 text-center">
+                                        <button onclick="undoDirectProduction('${r.batchId || ''}', '${r.id || ''}')" class="px-2 py-1 bg-orange-100 text-orange-700 rounded text-xs font-bold hover:bg-orange-200 border border-orange-200">Undo</button>
+                                    </td>
+                                </tr>
+                            `).join('')}
+                        </tbody>
+                    </table>
+                </div>
+            `;
+        }
+
+        // ── ADP: filter history by search term ────────────────────────────────
+        function adpFilterHistory() {
+            const q = (document.getElementById('adpHistorySearch').value || '').toLowerCase().trim();
+            if (!q) { adpRenderHistoryTable(_adpAllRecords); return; }
+            const filtered = _adpAllRecords.filter(r =>
+                (r.productName || '').toLowerCase().includes(q) ||
+                (r.producedBy || '').toLowerCase().includes(q)
+            );
+            adpRenderHistoryTable(filtered);
+        }
+
+        // ── ADP: load recent history ──────────────────────────────────────────
+        async function adpLoadHistory() {
+            const container = document.getElementById('adpHistoryContainer');
+            if (!container) return;
+            container.innerHTML = '<p class="text-gray-400 text-sm text-center py-6">Loading...</p>';
+            try {
+                const data = await callBackend('get_all_requests', { page: 1, limit: 200 });
+                const requests = (data && data.result === 'success' && Array.isArray(data.requests)) ? data.requests : [];
+                _adpAllRecords = requests.filter(r =>
+                    r.adminDirectProduce ||
+                    (r.type || '').toLowerCase().includes('admin direct')
+                ).sort((a, b) => (b.date || '').localeCompare(a.date || '')).slice(0, 100);
+
+                if (_adpAllRecords.length === 0) {
+                    container.innerHTML = '<p class="text-gray-400 text-sm text-center py-6">No direct production records yet.</p>';
+                    return;
+                }
+                const searchEl = document.getElementById('adpHistorySearch');
+                const q = searchEl ? (searchEl.value || '').toLowerCase().trim() : '';
+                if (q) {
+                    adpFilterHistory();
+                } else {
+                    adpRenderHistoryTable(_adpAllRecords);
+                }
+            } catch (e) {
+                container.innerHTML = `<p class="text-red-400 text-sm text-center py-4">Error loading history: ${e.message || e}</p>`;
+            }
+        }
+
+        // ── ADP: Undo a direct production batch ─────────────────────────────
+        async function undoDirectProduction(batchId, requestId) {
+            if (!batchId) { showToast('No batch ID found.', 'error'); return; }
+
+            const confirmMsg = `⚠️ UNDO DIRECT PRODUCTION ⚠️\n\nBatch: ${batchId}\n\nThis will:\n• Remove the finished goods from inventory\n• Restore all consumed raw materials\n• Delete the production record\n\nAre you sure?`;
+            if (!confirm(confirmMsg)) return;
+
+            showToast('Undoing production...', 'info');
+            try {
+                const result = await callBackend('undo_admin_direct_produce', { batchId, requestId });
+                if (result.result === 'success') {
+                    showToast('✅ Production undone successfully! Materials restored.', 'success');
+                    await adpLoadHistory();
+                    invalidateViewCache(true);
+                } else {
+                    showToast('❌ Failed to undo: ' + (result.error || 'Unknown error'), 'error');
+                }
+            } catch (e) {
+                showToast('❌ Error: ' + (e.message || e), 'error');
             }
         }
     </script>
