@@ -875,8 +875,10 @@
     return ok({ user: profileUser });
   }
 
-  async function getDb() {
-    var snap = await db.collection('Database').doc('latest').get();
+  async function getDb(params) {
+    // Force fresh data from server, bypass cache
+    var getOptions = { source: 'server' };
+    var snap = await db.collection('Database').doc('latest').get(getOptions);
     if (!snap.exists) return { status: 'success', result: 'success', data: null };
     var d = snap.data();
     var payload = (d && d.data) ? d.data : d;
@@ -900,8 +902,14 @@
           function txMatch(tx) {
             if (!tx || tx.category !== cat) return false;
             var txId = String(tx.itemId != null ? tx.itemId : '');
-            return (txId !== '' && itemIdStr !== '' && txId === itemIdStr) ||
-                   (txId !== '' && itemName  !== '' && txId === itemName);
+            var txName = String(tx.itemName != null ? tx.itemName : '');
+            // Match by itemId
+            if (txId !== '' && itemIdStr !== '' && txId === itemIdStr) return true;
+            if (txId !== '' && itemName !== '' && txId === itemName) return true;
+            // Also match by itemName if itemId matching failed
+            if (txName !== '' && itemIdStr !== '' && txName === itemIdStr) return true;
+            if (txName !== '' && itemName !== '' && txName === itemName) return true;
+            return false;
           }
           var running = parseFloat(item.openingStock) || 0;
           var recToday = 0, conToday = 0;
@@ -1452,8 +1460,13 @@
     var version = (d && d.latestId) ? d.latestId : null;
     return ok({
       finishedGoods: arr.map(function (i) {
-        var qty = parseFloat(i.quantity || i.qty || 0);
-        if (isNaN(qty) || qty === 0) qty = calculateFGStock(i, transactions);
+        // Use _effectiveStock (calculated closing stock) if available, otherwise compute from transactions
+        var qty;
+        if (i._effectiveStock != null) {
+          qty = parseFloat(i._effectiveStock);
+        } else {
+          qty = calculateFGStock(i, transactions);
+        }
         return { id: i.id || i.name, name: i.name || i.itemName || String(i.id || ''), unit: i.unit || 'Units', quantity: Math.max(0, qty) };
       }),
       customers: customers.map(function (c) { return { id: c.id, name: c.name || '', type: c.type || '', location: c.location || '', gst: c.gst || '' }; }),
@@ -3654,6 +3667,14 @@
       if (Array.isArray(raw)) ingredients = raw;
     } catch (e) { ingredients = []; }
 
+    // Debug logging
+    console.log('[ADMIN_DIRECT_PRODUCE] Received ingredients:', JSON.stringify(ingredients));
+    console.log('[ADMIN_DIRECT_PRODUCE] Total ingredients:', ingredients.length);
+    var packingMats = ingredients.filter(function(i) { return i.category === 'packingMaterials'; });
+    var labelItems = ingredients.filter(function(i) { return i.category === 'labels'; });
+    console.log('[ADMIN_DIRECT_PRODUCE] Packing materials:', packingMats.length, JSON.stringify(packingMats));
+    console.log('[ADMIN_DIRECT_PRODUCE] Labels:', labelItems.length, JSON.stringify(labelItems));
+
     // ── Read Database/latest ──────────────────────────────────────────────────
     var latestRef = db.collection('Database').doc('latest');
     var snap = await latestRef.get();
@@ -3697,19 +3718,37 @@
       var deducted = ingQty - remaining;
       if (remaining > 0) shortfalls.push(ingNameStr + ' (short ' + remaining.toFixed(3) + ')');
 
+      // Update consumedQuantity for reports
+      for (var ii = 0; ii < arr.length; ii++) {
+        var item = arr[ii];
+        var match = (ingIdStr && (String(item.id || '') === ingIdStr || String(item.itemId || '') === ingIdStr)) ||
+                    (ingNameStr && (String(item.name || '') === ingNameStr || String(item.itemName || '') === ingNameStr));
+        if (!match) continue;
+        // Add to consumedQuantity for reports (Received/Consumed/Closing view)
+        var existingConsumed = parseFloat(item.consumedQuantity || item.consumed || 0) || 0;
+        item.consumedQuantity = existingConsumed + ingQty;
+        item.consumed = item.consumedQuantity;
+        break;
+      }
+
       // Always record the full required quantity as a consume transaction (even if it goes negative)
+      // Use local time format (without Z) to match Main Inventory expectations
+      // CRITICAL: Add relatedBatchId and fgBatchId for traceability linking
       payload.transactions.push({
         id: Date.now().toString() + '-adp-' + ci,
         itemId: ing.itemId || ingNameStr,
         itemName: ingNameStr,
         category: cat,
-        type: 'consume',
+        type: 'production-consume',
         quantity: ingQty,
         date: productionDate + 'T00:00:00.000Z',
         requestId: batchId,
         producedBy: producedBy,
         enteredBy: adminEmail,
         batchId: batchId,
+        batchNo: batchId,
+        relatedBatchId: batchId,
+        fgBatchId: batchId,
         notes: 'Direct Production: ' + (notes || batchId)
       });
     }
@@ -3725,6 +3764,10 @@
       if (fgName === productName.toLowerCase()) {
         var cur = parseFloat(fg.quantity || fg.qty || fg.openingStock || 0) || 0;
         fg.quantity = fg.qty = cur + producedQty;
+        // Update receivedQuantity for reports (Opening/Received/Consumed/Closing view)
+        var existingReceived = parseFloat(fg.receivedQuantity || fg.received || 0) || 0;
+        fg.receivedQuantity = existingReceived + producedQty;
+        fg.received = fg.receivedQuantity;
         fgId = fg.id || fg.itemId || '';
         fgFound = true;
         break;
@@ -3746,12 +3789,13 @@
     }
 
     // Log finished goods addition as a transaction (include itemId for matching)
+    // Match employee production format: production-add type with UTC date
     payload.transactions.push({
       id: Date.now().toString() + '-adp-fg',
       itemId: fgId,
       itemName: productName,
       category: 'finishedGoods',
-      type: 'admin-direct-produce-output',
+      type: 'production-add',
       quantity: producedQty,
       unit: unit,
       date: productionDate + 'T00:00:00.000Z',
@@ -3759,8 +3803,14 @@
       producedBy: producedBy,
       enteredBy: adminEmail,
       batchId: batchId,
+      batchNo: batchId,
       notes: notes
     });
+
+    // Debug: Log all transactions created
+    var newTransactions = payload.transactions.filter(function(t) { return t.batchId === batchId || t.requestId === batchId; });
+    console.log('[ADMIN_DIRECT_PRODUCE] Total transactions created:', newTransactions.length);
+    console.log('[ADMIN_DIRECT_PRODUCE] Transactions:', JSON.stringify(newTransactions, null, 2));
 
     // ── Save back to Database/latest ─────────────────────────────────────────
     var saveResult = await saveInventory(payload, currentVersion);
@@ -3772,6 +3822,20 @@
     }
 
     // ── Create Requisitions_V2 record ─────────────────────────────────────────
+    // Parse pack size data from params
+    var packSizes = [];
+    var totalPacked = 0;
+    var unallocatedQty = 0;
+    var isFullyPacked = false;
+    try {
+      var packRaw = params.packSizes;
+      if (typeof packRaw === 'string') packRaw = JSON.parse(packRaw);
+      if (Array.isArray(packRaw)) packSizes = packRaw;
+      totalPacked = parseFloat(params.totalPacked) || 0;
+      unallocatedQty = parseFloat(params.unallocatedQty) || 0;
+      isFullyPacked = params.isFullyPacked === true || params.isFullyPacked === 'true';
+    } catch (e) { /* ignore parse errors */ }
+
     var reqId = 'ADMIN-' + Date.now();
     var reqRef = db.collection('Requisitions_V2').doc(reqId);
     await reqRef.set({
@@ -3782,6 +3846,7 @@
       AdminDirectProduce: true,
       ProductName: productName,
       RequestedQty: producedQty,
+      quantity: producedQty,
       Unit: unit,
       FormulaID: formulaId,
       Formulaltems: JSON.stringify(ingredients),
@@ -3791,14 +3856,22 @@
       EmployeeEm: adminEmail,
       EmployeeName: adminName,
       BatchID: batchId,
+      batchId: batchId,
       ProductionDate: productionDate,
+      productionDate: productionDate,
       Notes: notes,
+      notes: notes,
       CreatedDate: nowIso,
       IssuedAt: nowIso,
       Shortfalls: shortfalls.length > 0 ? shortfalls.join('; ') : '',
       AdditionalItems: '[]',
       Corrections: '[]',
-      PartialIssuedQty: 0
+      PartialIssuedQty: 0,
+      // Pack size tracking
+      packSizes: JSON.stringify(packSizes),
+      totalPacked: totalPacked,
+      unallocatedQty: unallocatedQty,
+      isFullyPacked: isFullyPacked
     });
 
     await auditLog('admin_direct_produce', adminEmail, {
@@ -3862,8 +3935,8 @@
     }
     if (batchTxs.length === 0) return fail(new Error('No transactions found for batch: ' + batchId));
 
-    var fgTx = batchTxs.find(tx => tx.type === 'admin-direct-produce-output');
-    var consumeTxs = batchTxs.filter(tx => tx.type === 'consume');
+    var fgTx = batchTxs.find(tx => tx.type === 'production-add' || tx.type === 'admin-direct-produce-output');
+    var consumeTxs = batchTxs.filter(tx => tx.type === 'production-consume' || tx.type === 'consume');
 
     // ── Restore consumed raw materials ──────────────────────────────────────
     for (var ci = 0; ci < consumeTxs.length; ci++) {
@@ -3886,6 +3959,11 @@
         item.quantity = item.qty = restoredQty;
         if (item.openingStock != null) item.openingStock = restoredQty;
         if (item.stock != null) item.stock = restoredQty;
+        // Also restore consumedQuantity for reports
+        var existingConsumed = parseFloat(item.consumedQuantity || item.consumed || 0) || 0;
+        var newConsumed = Math.max(0, existingConsumed - txQty);
+        item.consumedQuantity = newConsumed;
+        item.consumed = newConsumed;
         break;
       }
     }
@@ -3907,6 +3985,11 @@
         var newQty = Math.max(0, current - fgQty);  // remove the produced amount (don't go below 0)
         fg.quantity = fg.qty = newQty;
         if (fg.openingStock != null) fg.openingStock = newQty;
+        // Also reverse receivedQuantity for reports
+        var existingReceived = parseFloat(fg.receivedQuantity || fg.received || 0) || 0;
+        var newReceived = Math.max(0, existingReceived - fgQty);
+        fg.receivedQuantity = newReceived;
+        fg.received = newReceived;
         break;
       }
     }
