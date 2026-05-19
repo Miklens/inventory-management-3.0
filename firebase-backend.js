@@ -916,18 +916,23 @@
           txns.forEach(function(tx) {
             var txDate = (tx.date || '').toString().slice(0, 10);
             if (!txMatch(tx)) return;
-            var q = parseFloat(tx.quantity) || 0;
+            var q = parseFloat(tx.quantity || 0) || 0;
             var type = tx.type || '';
             if (txDate < openingDate) return;
             if (txDate < todayStr) {
-              if (type === 'receive' || type === 'stock-take-adj-in' || type === 'production-add') running += q;
+              if (type === 'receive' || type === 'stock-take-adj-in' || type === 'production-add' || type === 'admin-direct-produce-output') running += q;
               else if (type === 'consume' || type === 'stock-take-adj-out' || type === 'production-consume' || type === 'requisition-issue' || type === 'dispatch') running -= (q > 0 ? q : -q);
             } else if (txDate === todayStr) {
-              if (type === 'receive' || type === 'stock-take-adj-in' || type === 'production-add') recToday += q;
+              if (type === 'receive' || type === 'stock-take-adj-in' || type === 'production-add' || type === 'admin-direct-produce-output') recToday += q;
               else if (type === 'consume' || type === 'stock-take-adj-out' || type === 'production-consume' || type === 'requisition-issue' || type === 'dispatch') conToday += (q > 0 ? q : -q);
             }
           });
-          item._effectiveStock = running + recToday - conToday;
+          // For newly created items with no transactions, use the item's quantity field
+          var calculatedStock = running + recToday - conToday;
+          if (calculatedStock === 0 && (item.quantity || item.qty || 0) > 0) {
+            calculatedStock = parseFloat(item.quantity || item.qty || 0) || 0;
+          }
+          item._effectiveStock = calculatedStock;
         });
       });
     } catch(e) { /* non-fatal — _effectiveStock may be missing */ }
@@ -961,6 +966,20 @@
       latestId: id,
       exportedAt: new Date().toISOString()
     });
+    // Sync FormCache so Digital Requisition always reads fresh item lists with correct IDs
+    var inv = (toSave && toSave.inventory) ? toSave.inventory : null;
+    if (inv) {
+      var built = buildFormDataFromInventory(inv);
+      db.collection('FormCache').doc('latest').set({
+        products: sanitizeForFirestore(built.products),
+        materials: sanitizeForFirestore(built.materials),
+        rawMaterials: sanitizeForFirestore(built.rawMaterials),
+        packingMaterials: sanitizeForFirestore(built.packingMaterials),
+        labels: sanitizeForFirestore(built.labels),
+        updatedAt: new Date().toISOString(),
+        version: id
+      }).catch(function(e) { console.warn('[saveInventory] FormCache update failed:', e.message); });
+    }
     return { status: 'success', result: 'success', version: id };
   }
 
@@ -1246,8 +1265,8 @@
       return remaining;
     }
 
-    var nowIso = new Date().toISOString();
-    var dateStr = nowIso.split('T')[0] + 'T00:00:00.000Z';
+    var _nowDeduct = new Date();
+    var dateStr = _nowDeduct.getFullYear() + '-' + String(_nowDeduct.getMonth() + 1).padStart(2, '0') + '-' + String(_nowDeduct.getDate()).padStart(2, '0') + 'T00:00:00.000Z';
     if (!Array.isArray(payload.transactions)) payload.transactions = [];
 
     for (var c = 0; c < list.length; c++) {
@@ -2051,7 +2070,16 @@
 
   function buildFormDataFromInventory(inv) {
     if (!inv) return { products: [], materials: [], rawMaterials: [], packingMaterials: [], labels: [] };
-    var toItem = function (i) { return { id: i.id || i.name, name: i.name || i.itemName || String(i.id || ''), unit: i.unit || 'Units' }; };
+    var toItem = function (i) {
+      var qty = i.quantity != null ? i.quantity : (i.qty != null ? i.qty : (i.openingStock != null ? i.openingStock : 0));
+      return {
+        id: i.id || i.name,
+        name: i.name || i.itemName || String(i.id || ''),
+        unit: i.unit || 'Units',
+        quantity: parseFloat(qty) || 0,
+        minStockLevel: parseFloat(i.minStockLevel || 0) || 0
+      };
+    };
     var raw = (inv.rawMaterials || []).map(toItem);
     var pack = (inv.packingMaterials || []).map(toItem);
     var lbl = (inv.labels || []).map(toItem);
@@ -3659,6 +3687,15 @@
     var formulaId    = (params.formulaId != null ? String(params.formulaId) : '');
     var batchId      = (params.batchId || ('ADMIN-BATCH-' + Date.now())).toString().trim();
 
+    // Pack-wise tracking parameters
+    var trackPackWise = params.trackPackWise === true || params.trackPackWise === 'true';
+    var packSizes = [];
+    try {
+      var rawPackSizes = params.packSizes;
+      if (typeof rawPackSizes === 'string') rawPackSizes = JSON.parse(rawPackSizes);
+      if (Array.isArray(rawPackSizes)) packSizes = rawPackSizes;
+    } catch (e) { packSizes = []; }
+
     // Ingredients to deduct: array of { itemId, itemName, category, quantity }
     var ingredients = [];
     try {
@@ -3666,14 +3703,6 @@
       if (typeof raw === 'string') raw = JSON.parse(raw);
       if (Array.isArray(raw)) ingredients = raw;
     } catch (e) { ingredients = []; }
-
-    // Debug logging
-    console.log('[ADMIN_DIRECT_PRODUCE] Received ingredients:', JSON.stringify(ingredients));
-    console.log('[ADMIN_DIRECT_PRODUCE] Total ingredients:', ingredients.length);
-    var packingMats = ingredients.filter(function(i) { return i.category === 'packingMaterials'; });
-    var labelItems = ingredients.filter(function(i) { return i.category === 'labels'; });
-    console.log('[ADMIN_DIRECT_PRODUCE] Packing materials:', packingMats.length, JSON.stringify(packingMats));
-    console.log('[ADMIN_DIRECT_PRODUCE] Labels:', labelItems.length, JSON.stringify(labelItems));
 
     // ── Read Database/latest ──────────────────────────────────────────────────
     var latestRef = db.collection('Database').doc('latest');
@@ -3710,7 +3739,8 @@
         var newQty  = current - remaining;   // allow negative
         item.quantity = newQty;
         item.qty = newQty;
-        if (item.openingStock != null) item.openingStock = newQty;
+        // DO NOT update openingStock - it should remain as historical baseline
+        // Stock calculation: openingStock + sum(transactions) = current stock
         if (item.stock != null) item.stock = newQty;
         remaining = 0;   // fully consumed regardless
       }
@@ -3756,61 +3786,210 @@
     // ── Add to Finished Goods ─────────────────────────────────────────────────
     var fgArr = Array.isArray(inv.finishedGoods) ? inv.finishedGoods : [];
     inv.finishedGoods = fgArr;
-    var fgId = '';
-    var fgFound = false;
-    for (var fi = 0; fi < fgArr.length; fi++) {
-      var fg = fgArr[fi];
-      var fgName = (fg.name || fg.itemName || '').toString().trim().toLowerCase();
-      if (fgName === productName.toLowerCase()) {
-        var cur = parseFloat(fg.quantity || fg.qty || fg.openingStock || 0) || 0;
-        fg.quantity = fg.qty = cur + producedQty;
-        // Update receivedQuantity for reports (Opening/Received/Consumed/Closing view)
-        var existingReceived = parseFloat(fg.receivedQuantity || fg.received || 0) || 0;
-        fg.receivedQuantity = existingReceived + producedQty;
-        fg.received = fg.receivedQuantity;
-        fgId = fg.id || fg.itemId || '';
-        fgFound = true;
-        break;
+    
+    // Pack-wise tracking: create separate items for each pack size
+    if (trackPackWise && packSizes.length > 0) {
+      var parentFgId = 'FG-ADP-' + Date.now();
+      var fgItemsCreated = [];
+      var bulkQty = 0;
+      
+      for (var pi = 0; pi < packSizes.length; pi++) {
+        var pack = packSizes[pi];
+        var packSize = (pack.size || pack.packSize || '').toString().trim();
+        var packQty = parseFloat(pack.quantity || pack.qty || 0);
+        var packCount = parseFloat(pack.packs || 0);
+        
+        if (!packQty || packQty <= 0) continue;
+        
+        // If bulk/unpacked, add to main product instead of creating separate item
+        if (packSize.toLowerCase() === 'bulk') {
+          bulkQty += packQty;
+          continue;
+        }
+        
+        // Create item name: "Product X - 5L Pack"
+        var fgItemName = productName + ' - ' + packSize + ' Pack';
+        
+        var fgItemFound = false;
+        var fgItemId = '';
+        
+        // Find existing item or create new
+        for (var fi = 0; fi < fgArr.length; fi++) {
+          var fg = fgArr[fi];
+          var fgName = (fg.name || fg.itemName || '').toString().trim().toLowerCase();
+          if (fgName === fgItemName.toLowerCase()) {
+            var cur = parseFloat(fg.quantity || fg.qty || fg.openingStock || 0) || 0;
+            fg.quantity = fg.qty = cur + packQty;
+            var existingReceived = parseFloat(fg.receivedQuantity || fg.received || 0) || 0;
+            fg.receivedQuantity = existingReceived + packQty;
+            fg.received = fg.receivedQuantity;
+            fgItemId = fg.id || fg.itemId || '';
+            // Ensure parentProductId is set
+            if (!fg.parentProductId) fg.parentProductId = parentFgId;
+            fgItemFound = true;
+            break;
+          }
+        }
+        
+        if (!fgItemFound) {
+          fgItemId = 'FG-ADP-' + Date.now() + '-' + pi;
+          // For backdated production, set openingStockDate to the production date
+          // so that transactions on/after that date are included in calculation
+          var itemOpeningDate = productionDate || new Date().toISOString().split('T')[0];
+          fgArr.push({
+            id: fgItemId,
+            name: fgItemName,
+            unit: unit,
+            quantity: packQty,
+            qty: packQty,
+            openingStock: 0,
+            openingStockDate: itemOpeningDate,
+            receivedQuantity: packQty,
+            consumedQuantity: 0,
+            category: 'finishedGoods',
+            parentProductId: parentFgId,
+            packSize: packSize,
+            packs: packCount
+          });
+        }
+        
+        fgItemsCreated.push({
+          itemId: fgItemId,
+          itemName: fgItemName,
+          quantity: packQty,
+          packSize: packSize,
+          packs: packCount
+        });
+        
+        // Log transaction for this pack size
+        payload.transactions.push({
+          id: Date.now().toString() + '-adp-fg-' + pi,
+          itemId: fgItemId,
+          itemName: fgItemName,
+          category: 'finishedGoods',
+          type: 'production-add',
+          quantity: packQty,
+          unit: unit,
+          date: productionDate + 'T00:00:00.000Z',
+          requestId: batchId,
+          producedBy: producedBy,
+          enteredBy: adminEmail,
+          batchId: batchId,
+          batchNo: batchId,
+          parentProductId: parentFgId,
+          packSize: packSize,
+          packs: packCount,
+          notes: notes + ' (' + packSize + ' Pack)'
+        });
       }
-    }
-    if (!fgFound) {
-      fgId = 'FG-ADP-' + Date.now();
-      fgArr.push({
-        id: fgId,
-        name: productName,
-        unit: unit,
+      
+      // Add bulk quantity to main product (parent)
+      if (bulkQty > 0) {
+        var mainFgFound = false;
+        var mainFgId = '';
+        for (var fi = 0; fi < fgArr.length; fi++) {
+          var fg = fgArr[fi];
+          var fgName = (fg.name || fg.itemName || '').toString().trim().toLowerCase();
+          if (fgName === productName.toLowerCase()) {
+            var cur = parseFloat(fg.quantity || fg.qty || fg.openingStock || 0) || 0;
+            fg.quantity = fg.qty = cur + bulkQty;
+            var existingReceived = parseFloat(fg.receivedQuantity || fg.received || 0) || 0;
+            fg.receivedQuantity = existingReceived + bulkQty;
+            fg.received = fg.receivedQuantity;
+            mainFgId = fg.id || fg.itemId || '';
+            mainFgFound = true;
+            break;
+          }
+        }
+        if (!mainFgFound) {
+          mainFgId = 'FG-ADP-' + Date.now() + '-main';
+          var mainOpeningDate = productionDate || new Date().toISOString().split('T')[0];
+          fgArr.push({
+            id: mainFgId,
+            name: productName,
+            unit: unit,
+            quantity: bulkQty,
+            qty: bulkQty,
+            openingStock: 0,
+            openingStockDate: mainOpeningDate,
+            receivedQuantity: bulkQty,
+            consumedQuantity: 0,
+            category: 'finishedGoods',
+            parentProductId: parentFgId
+          });
+        }
+        
+        // Log transaction for bulk addition to main product
+        payload.transactions.push({
+          id: Date.now().toString() + '-adp-fg-main',
+          itemId: mainFgId,
+          itemName: productName,
+          category: 'finishedGoods',
+          type: 'production-add',
+          quantity: bulkQty,
+          unit: unit,
+          date: productionDate + 'T00:00:00.000Z',
+          requestId: batchId,
+          producedBy: producedBy,
+          enteredBy: adminEmail,
+          batchId: batchId,
+          batchNo: batchId,
+          parentProductId: parentFgId,
+          notes: notes + ' (Bulk/Unpacked)'
+        });
+      }
+      
+    } else {
+      // Original behavior: single finished goods item
+      var fgId = '';
+      var fgFound = false;
+      for (var fi = 0; fi < fgArr.length; fi++) {
+        var fg = fgArr[fi];
+        var fgName = (fg.name || fg.itemName || '').toString().trim().toLowerCase();
+        if (fgName === productName.toLowerCase()) {
+          var cur = parseFloat(fg.quantity || fg.qty || fg.openingStock || 0) || 0;
+          fg.quantity = fg.qty = cur + producedQty;
+          var existingReceived = parseFloat(fg.receivedQuantity || fg.received || 0) || 0;
+          fg.receivedQuantity = existingReceived + producedQty;
+          fg.received = fg.receivedQuantity;
+          fgId = fg.id || fg.itemId || '';
+          fgFound = true;
+          break;
+        }
+      }
+      if (!fgFound) {
+        fgId = 'FG-ADP-' + Date.now();
+        fgArr.push({
+          id: fgId,
+          name: productName,
+          unit: unit,
+          quantity: producedQty,
+          qty: producedQty,
+          openingStock: 0,
+          receivedQuantity: producedQty,
+          consumedQuantity: 0,
+          category: 'finishedGoods'
+        });
+      }
+
+      // Log finished goods addition as a transaction
+      payload.transactions.push({
+        id: Date.now().toString() + '-adp-fg',
+        itemId: fgId,
+        itemName: productName,
+        category: 'finishedGoods',
+        type: 'production-add',
         quantity: producedQty,
-        qty: producedQty,
-        openingStock: 0,
-        receivedQuantity: producedQty,
-        consumedQuantity: 0,
-        category: 'finishedGoods'
+        unit: unit,
+        date: productionDate + 'T00:00:00.000Z',
+        requestId: batchId,
+        producedBy: producedBy,
+        enteredBy: adminEmail,
+        batchId: batchId,
+        batchNo: batchId,
+        notes: notes
       });
     }
-
-    // Log finished goods addition as a transaction (include itemId for matching)
-    // Match employee production format: production-add type with UTC date
-    payload.transactions.push({
-      id: Date.now().toString() + '-adp-fg',
-      itemId: fgId,
-      itemName: productName,
-      category: 'finishedGoods',
-      type: 'production-add',
-      quantity: producedQty,
-      unit: unit,
-      date: productionDate + 'T00:00:00.000Z',
-      requestId: batchId,
-      producedBy: producedBy,
-      enteredBy: adminEmail,
-      batchId: batchId,
-      batchNo: batchId,
-      notes: notes
-    });
-
-    // Debug: Log all transactions created
-    var newTransactions = payload.transactions.filter(function(t) { return t.batchId === batchId || t.requestId === batchId; });
-    console.log('[ADMIN_DIRECT_PRODUCE] Total transactions created:', newTransactions.length);
-    console.log('[ADMIN_DIRECT_PRODUCE] Transactions:', JSON.stringify(newTransactions, null, 2));
 
     // ── Save back to Database/latest ─────────────────────────────────────────
     var saveResult = await saveInventory(payload, currentVersion);
@@ -4037,6 +4216,118 @@
     });
   }
 
+  /**
+   * Returns direct production history cross-checked against actual inventory transactions.
+   * Filters out any Requisitions_V2 records whose batch transactions no longer exist
+   * in Database/latest (i.e. already undone from Miklens Main Inventory).
+   */
+  async function getDirectProduceHistory(params) {
+    var limit = parseInt(params.limit, 10) || 200;
+
+    // 1. Fetch all Admin Direct Produce requisition records
+    var all = await getCollectionArray('Requisitions_V2');
+    var directRecords = all.filter(function (r) {
+      return r.AdminDirectProduce || r.adminDirectProduce ||
+             (String(r.Type || r.type || '')).toLowerCase().indexOf('admin direct') >= 0;
+    });
+
+    if (directRecords.length === 0) {
+      return ok({ requests: [] });
+    }
+
+    // 2. Read inventory transactions from Database/latest
+    var activeBatchIds = new Set();
+    try {
+      var latestSnap = await db.collection('Database').doc('latest').get();
+      if (latestSnap.exists) {
+        var d = latestSnap.data();
+        var payload = (d.data != null) ? d.data : d;
+        var txs = Array.isArray(payload.transactions) ? payload.transactions : [];
+        txs.forEach(function (tx) {
+          if (tx.batchId) activeBatchIds.add(tx.batchId.toString().trim());
+          if (tx.batchNo) activeBatchIds.add(tx.batchNo.toString().trim());
+          if (tx.requestId) activeBatchIds.add(tx.requestId.toString().trim());
+        });
+      }
+    } catch (e) {
+      // If we cannot read inventory, fall back to showing all records (non-fatal)
+      console.warn('[getDirectProduceHistory] Could not read inventory transactions:', e.message);
+      var requests = directRecords
+        .sort(function (a, b) { return (b.ProductionDate || b.CreatedDate || b.date || '').localeCompare(a.ProductionDate || a.CreatedDate || a.date || ''); })
+        .slice(0, limit)
+        .map(function (d) { return rowToRequest(d, false); });
+      return ok({ requests: requests });
+    }
+
+    // 3. Filter: only include records whose batchId still has transactions in inventory
+    var filtered = directRecords.filter(function (r) {
+      var bid = (r.BatchID || r.batchId || '').toString().trim();
+      var rid = (r.RequestID || r.id || '').toString().trim();
+      // If no batchId on record, fall back to requestId (legacy)
+      var key = bid || rid;
+      if (!key) return false;
+      return activeBatchIds.has(bid) || activeBatchIds.has(rid);
+    });
+
+    filtered = filtered
+      .sort(function (a, b) { return (b.ProductionDate || b.CreatedDate || b.date || '').localeCompare(a.ProductionDate || a.CreatedDate || a.date || ''); })
+      .slice(0, limit);
+
+    var requests = filtered.map(function (d) { return rowToRequest(d, false); });
+    return ok({ requests: requests });
+  }
+
+  /**
+   * Deletes the Requisitions_V2 record associated with a given batchId.
+   * Called by Miklens Main Inventory when a production batch is undone there,
+   * so the Digital Requisition history stays in sync.
+   */
+  async function deleteRequisitionByBatch(params) {
+    var batchId = (params.batchId || '').toString().trim();
+    if (!batchId) return fail(new Error('batchId is required.'));
+
+    var adminId = adminIdentifier(params) || (params.email || '').toLowerCase().trim();
+    var allowed = await hasRole(adminId, ['Admin', 'Manager']);
+    if (!allowed) return fail(new Error('Admin or Manager privileges required.'));
+
+    // Find the Requisitions_V2 document(s) matching this batchId
+    var deletedCount = 0;
+    try {
+      var snap = await db.collection('Requisitions_V2')
+        .where('BatchID', '==', batchId)
+        .get();
+      var batch = db.batch();
+      snap.forEach(function (doc) {
+        batch.delete(doc.ref);
+        deletedCount++;
+      });
+      // Also try lowercase field variant
+      if (deletedCount === 0) {
+        var snap2 = await db.collection('Requisitions_V2')
+          .where('batchId', '==', batchId)
+          .get();
+        snap2.forEach(function (doc) {
+          batch.delete(doc.ref);
+          deletedCount++;
+        });
+      }
+      if (deletedCount > 0) {
+        await batch.commit();
+      }
+    } catch (e) {
+      // Non-fatal: log and continue
+      console.warn('[deleteRequisitionByBatch] Firestore query/delete error:', e.message);
+    }
+
+    await auditLog('delete_requisition_by_batch', adminId, {
+      batchId: batchId,
+      deletedCount: deletedCount,
+      note: 'Requisitions_V2 record removed after main inventory batch undo'
+    });
+
+    return ok({ batchId: batchId, deletedCount: deletedCount, message: 'Requisition record removed for batch ' + batchId });
+  }
+
   var actionHandlers = {
     test_connection: async function () { return ok({ status: 'Online' }); },
     test: async function () { return ok({ status: 'Online' }); },
@@ -4211,6 +4502,8 @@
     admin_force_action: adminForceAction,
     admin_direct_produce: adminDirectProduce,
     undo_admin_direct_produce: undoAdminDirectProduce,
+    delete_requisition_by_batch: deleteRequisitionByBatch,
+    get_direct_produce_history: getDirectProduceHistory,
     submit_stock_adjustment_request: async function (p) {
       var id = 'SAR-' + Date.now();
       await db.collection('StockAdjustmentRequests').doc(id).set({
