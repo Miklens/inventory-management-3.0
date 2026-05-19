@@ -14,10 +14,10 @@
     <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-auth-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
-    <script src="firebase-backend.js?v=20260516_31"></script>
+    <script src="firebase-backend.js?v=20260519_57"></script>
     <script>
       // Build stamp (helps verify cache/old deployments)
-    window.__REQ_APP_BUILD__ = '2026-05-16_31';
+    window.__REQ_APP_BUILD__ = '2026-05-19_57';
       console.log('[REQ_APP_BUILD]', window.__REQ_APP_BUILD__);
     </script>
     <script>
@@ -139,6 +139,103 @@
         @media (max-width: 640px) {
             .miklens-dialog { padding: 1.25rem; }
             #detailsPanel { max-width: 100% !important; }
+        }
+
+        /* Searchable Dropdown Styles */
+        .searchable-select-container {
+            position: relative;
+            flex: 1;
+        }
+        .searchable-select-input {
+            width: 100%;
+            padding: 8px 28px 8px 10px;
+            border: 1px solid #d1d5db;
+            border-radius: 6px;
+            font-size: 12px;
+            background: white;
+            cursor: pointer;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .searchable-select-input:focus {
+            outline: none;
+            border-color: #3b82f6;
+            box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2);
+        }
+        .searchable-select-dropdown {
+            position: absolute;
+            top: 100%;
+            left: 0;
+            right: 0;
+            max-height: 300px;
+            overflow-y: auto;
+            background: white;
+            border: 1px solid #d1d5db;
+            border-radius: 6px;
+            margin-top: 4px;
+            z-index: 9999;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+            display: none;
+        }
+        .searchable-select-dropdown.active {
+            display: block;
+        }
+        .searchable-select-search {
+            padding: 8px;
+            border-bottom: 1px solid #e5e7eb;
+            position: sticky;
+            top: 0;
+            background: white;
+            z-index: 10;
+        }
+        .searchable-select-search input {
+            width: 100%;
+            padding: 6px 10px;
+            border: 1px solid #d1d5db;
+            border-radius: 4px;
+            font-size: 12px;
+        }
+        .searchable-select-search input:focus {
+            outline: none;
+            border-color: #3b82f6;
+        }
+        .searchable-select-options {
+            max-height: 200px;
+            overflow-y: auto;
+        }
+        .searchable-select-option {
+            padding: 8px 10px;
+            cursor: pointer;
+            font-size: 12px;
+            border-bottom: 1px solid #f3f4f6;
+        }
+        .searchable-select-option:hover {
+            background: #eff6ff;
+        }
+        .searchable-select-option.selected {
+            background: #dbeafe;
+            color: #1d4ed8;
+            font-weight: 600;
+        }
+        .searchable-select-option.disabled {
+            color: #9ca3af;
+            cursor: not-allowed;
+        }
+        .searchable-select-no-results {
+            padding: 12px;
+            text-align: center;
+            color: #6b7280;
+            font-size: 12px;
+        }
+        .searchable-select-arrow {
+            position: absolute;
+            right: 8px;
+            top: 50%;
+            transform: translateY(-50%);
+            pointer-events: none;
+            color: #6b7280;
+            font-size: 10px;
         }
     </style>
 </head>
@@ -871,14 +968,10 @@
                     email: (currentUser && currentUser.email) ? currentUser.email : '',
                     name: (currentUser && currentUser.name) ? currentUser.name : '',
                     role: (currentUser && currentUser.role) ? currentUser.role : ''
-                }).then(function (r) {
-                    console.log('[SYNC_NOW]', r);
                 }).catch(function (e) {
                     console.warn('[SYNC_NOW_FAIL]', e);
                 });
-                syncRecipientDirectFromClient().then(function (ok) {
-                    console.log('[SYNC_DIRECT]', ok ? 'ok' : 'failed');
-                }).catch(function (e) {
+                syncRecipientDirectFromClient().catch(function (e) {
                     console.warn('[SYNC_DIRECT_FAIL]', e);
                 });
             }
@@ -1260,7 +1353,6 @@
             };
 
             const tabs = portals[role] || [];
-            console.log('[DEBUG] initializePortal - role:', role, 'tabs count:', tabs.length, 'tabs:', tabs.map(t => t.id));
             tabs.forEach((tab, index) => {
                 const button = document.createElement('button');
                 button.className = `px-6 py-4 text-sm font-semibold border-b-2 transition-colors flex items-center gap-1.5 ${index === 0 ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-600 hover:text-gray-800'}`;
@@ -1323,14 +1415,11 @@
         function normalizeRole(role) {
             if (!role) return role;
             const r = role.toLowerCase().trim();
-            console.log('[DEBUG] normalizeRole - input:', role, 'lower:', r);
-            let result = role;
-            if (r === 'store' || r === 'storekeeper' || r === 'store incharge') result = 'Store Incharge';
-            else if (r === 'operator') result = 'Manager';
-            else if (r === 'admin') result = 'Admin';
-            else if (r === 'manager') result = 'Manager';
-            console.log('[DEBUG] normalizeRole - output:', result);
-            return result;
+            if (r === 'store' || r === 'storekeeper' || r === 'store incharge') return 'Store Incharge';
+            if (r === 'operator' || r === 'manager') return 'Manager';
+            if (r === 'admin') return 'Admin';
+            if (r === 'employee') return 'Employee';
+            return role;
         }
 
         // ==========================================
@@ -1546,7 +1635,7 @@
                         { icon: '⚠️', count: overdue, label: 'Overdue (>3d)', color: 'red', view: 'pending-approvals' }
                     ];
                     if (partialCount > 0) wCards.push({ icon: '📋', count: partialCount, label: 'Partial Issues', color: 'purple', view: 'partial-issue' });
-                    if (totalRequests > 0) wCards.push({ icon: '📁', count: totalRequests, label: 'Total Requests', color: 'gray', view: 'master-archive' });
+                    if (totalRequests > 0) wCards.push({ icon: '📁', count: totalRequests, label: 'Total Requests', color: 'gray', view: 'master_archive' });
                     widgets.className = 'grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3 mb-6';
                     widgets.innerHTML = wCards.map(w => `
                         <div onclick="loadView('${escAttr(w.view)}')" class="bg-white rounded-xl shadow-sm border border-gray-100 p-4 hover:shadow-md transition cursor-pointer group">
@@ -2370,7 +2459,7 @@
         }
 
         function getAvailablePackSizesForProduct(productName) {
-            const allDefaults = ['100ml', '250ml', '500ml', '1L', '5L', '10L', '250gm', '500gm', '1kg', '2kg', '5kg', 'Bulk'];
+            const allDefaults = ['50ml', '100ml', '250ml', '500ml', '1L', '5L', '10L', '25L', '50L', '200L', '250gm', '500gm', '1kg', '2kg', '5kg', 'Bulk'];
             const mode = detectProductMeasureMode(productName);
             const defaults = allDefaults.filter(size => packSizeMatchesMode(size, mode));
             const merged = {};
@@ -3228,7 +3317,6 @@
                         updateMultiPackMaterials();
                     }
                 };
-                console.log(`✅ Populated ${productsToRender.length} products`);
             }
 
             // 2. Populate material dropdown (Research)
@@ -3249,7 +3337,6 @@
                         document.getElementById('resUnit').value = selectedOption.dataset.unit;
                     }
                 };
-                console.log(`✅ Populated ${data.materials.length} materials`);
             }
         }
 
@@ -3304,34 +3391,14 @@
         }
         function getProductionPackingLabelsJson(containerId) {
             const container = document.getElementById(containerId);
-            console.log(`[getProductionPackingLabelsJson] Container ${containerId}:`, container);
-            
-            if (!container) {
-                console.log(`[getProductionPackingLabelsJson] Container ${containerId} not found, returning []`);
-                return [];
-            }
-            
+            if (!container) return [];
             const arr = [];
             const selects = container.querySelectorAll('.prod-pack-select');
-            console.log(`[getProductionPackingLabelsJson] Found ${selects.length} .prod-pack-select elements in ${containerId}`);
-            
             selects.forEach((sel, idx) => {
-                console.log(`[getProductionPackingLabelsJson] Processing select ${idx}:`, sel);
                 const opt = sel.options[sel.selectedIndex];
-                console.log(`[getProductionPackingLabelsJson]   Selected option:`, opt, 'value:', opt ? opt.value : 'N/A');
-                
-                if (!opt || !opt.value) {
-                    console.log(`[getProductionPackingLabelsJson]   Skipping: no option or no value`);
-                    return;
-                }
-                
+                if (!opt || !opt.value) return;
                 const qty = parseFloat(sel.closest('[data-row-id]').querySelector('.prod-pack-qty').value);
-                console.log(`[getProductionPackingLabelsJson]   Quantity:`, qty);
-                
-                if (isNaN(qty) || qty <= 0) {
-                    console.log(`[getProductionPackingLabelsJson]   Skipping: qty is NaN or <= 0`);
-                    return;
-                }
+                if (isNaN(qty) || qty <= 0) return;
                 
                 const item = {
                     itemId: opt.value,
@@ -3339,11 +3406,8 @@
                     quantity: qty,
                     unit: opt.dataset.unit || ''
                 };
-                console.log(`[getProductionPackingLabelsJson]   Adding item:`, item);
                 arr.push(item);
             });
-            
-            console.log(`[getProductionPackingLabelsJson] Final result for ${containerId}:`, arr, 'length:', arr.length);
             return arr;
         }
 
@@ -3375,8 +3439,6 @@
         // Show confirmation dialog for proceeding without packing details
         function showSkipPackagingConfirmDialog() {
             return new Promise((resolve) => {
-                console.log('Opening packing confirmation dialog...');
-                
                 const dialogOverlay = document.createElement('div');
                 dialogOverlay.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background-color:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:9999;';
                 
@@ -3400,17 +3462,10 @@
                 
                 dialogOverlay.appendChild(content);
                 document.body.appendChild(dialogOverlay);
-                console.log('Dialog added to DOM');
-                
-                // Add event listeners after dialog is in DOM
                 const cancelBtn = document.getElementById('dlg-cancel-packing');
                 const confirmBtn = document.getElementById('dlg-confirm-packing');
-                
-                console.log('Cancel button:', cancelBtn, 'Confirm button:', confirmBtn);
-                
                 if (cancelBtn) {
                     cancelBtn.addEventListener('click', function() {
-                        console.log('Cancel packing clicked');
                         dialogOverlay.remove();
                         resolve(false);
                     });
@@ -3420,7 +3475,6 @@
                 
                 if (confirmBtn) {
                     confirmBtn.addEventListener('click', function() {
-                        console.log('Confirm to skip packing clicked');
                         dialogOverlay.remove();
                         resolve(true);
                     });
@@ -3434,7 +3488,6 @@
             event.preventDefault();
             
             // Use wizard submit button as the spinner target (it's what user sees on step 4)
-            console.log('▶ submitProductionRequest called');
             const btn = document.getElementById('wizard-submit-btn') || event.submitter || event.target.querySelector('button[type="submit"]');
             if (btn) { btn.disabled = true; btn.innerHTML = '<span class="animate-spin inline-block w-4 h-4 border-2 border-current border-t-transparent rounded-full mr-2"></span>Submitting...'; }
 
@@ -3454,10 +3507,8 @@
             const labelMode = ((document.getElementById('prodLabelMode') || {}).value || 'normal').toLowerCase();
 
             if (!packageType) {
-                console.log('▶ packageType empty; asking confirmation to continue without package type');
                 if (btn) { btn.disabled = false; btn.innerText = 'Submit for Approval'; }
                 const proceedWithoutPackageType = await miklensConfirm('Package Type Not Selected', 'No package type has been selected.\n\nDo you want to continue and submit anyway?', { confirmText: 'Continue Without' });
-                console.log('▶ packageType confirm result:', proceedWithoutPackageType);
                 if (!proceedWithoutPackageType) return;
                 packageType = 'Not specified';
                 if (btn) { btn.disabled = true; btn.innerHTML = '<span class="animate-spin inline-block w-4 h-4 border-2 border-current border-t-transparent rounded-full mr-2"></span>Submitting...'; }
@@ -3471,10 +3522,8 @@
             // Packing confirmation - only reached after all other validations pass
             const packingJson = getProductionPackingLabelsJson('prodPackingRows');
             if (!packingJson || packingJson.length === 0) {
-                console.log('▶ packingJson empty - showing confirm');
                 if (btn) { btn.disabled = false; btn.innerText = 'Submit for Approval'; }
                 const ok = await miklensConfirm('Packaging Details Missing', 'No packing items have been added.\n\nAre you sure you want to submit WITHOUT packing details?\n\nStore staff will NOT have packaging instructions.', { confirmText: 'Skip & Submit' });
-                console.log('▶ confirm result:', ok);
                 if (!ok) return;
                 if (btn) { btn.disabled = true; btn.innerHTML = '<span class="animate-spin inline-block w-4 h-4 border-2 border-current border-t-transparent rounded-full mr-2"></span>Submitting...'; }
             }
@@ -7125,9 +7174,11 @@
                                 <div>
                                     <label class="block text-xs font-semibold text-gray-500 mb-1.5">Formula / Product <span class="text-red-500">*</span></label>
                                     <div class="flex gap-2">
-                                        <select id="adpProductSelect" onchange="adpOnProductChange()" class="flex-1 px-3 py-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm font-semibold text-gray-800 outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500">
-                                            <option value="">Loading...</option>
-                                        </select>
+                                        <div id="adpProductSelectContainer" class="flex-1">
+                                            <select id="adpProductSelect" onchange="adpOnProductChange()" class="w-full px-3 py-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm font-semibold text-gray-800 outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500">
+                                                <option value="">Loading...</option>
+                                            </select>
+                                        </div>
                                         <button onclick="adpLoadFormulas()" class="px-3 py-2.5 bg-gray-100 border border-gray-200 rounded-xl hover:bg-gray-200 text-gray-500 font-bold text-sm" title="Refresh">↻</button>
                                     </div>
                                     <input type="text" id="adpProductName" placeholder="Or type product name manually" class="mt-2 w-full px-3 py-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm font-semibold text-gray-700 outline-none focus:ring-2 focus:ring-blue-500" />
@@ -7176,8 +7227,14 @@
                             <div class="border border-gray-200 rounded-xl p-4 bg-gradient-to-br from-blue-50 to-indigo-50 mt-4">
                                 <div class="flex items-center justify-between mb-3">
                                     <p class="text-xs font-bold text-gray-800">📦 Split Pack Sizes (Multi-Pack Production)</p>
-                                    <span class="text-[10px] bg-blue-100 text-blue-800 px-2 py-1 rounded font-semibold">Select pack sizes you want to produce</span>
+                                    <div class="flex items-center gap-2">
+                                        <label class="flex items-center gap-1.5 cursor-pointer">
+                                            <input type="checkbox" id="adpTrackPackWise" class="w-3.5 h-3.5 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+                                            <span class="text-[10px] bg-green-100 text-green-800 px-2 py-1 rounded font-semibold">Track as Separate Items</span>
+                                        </label>
+                                    </div>
                                 </div>
+                                <p class="text-[10px] text-gray-500 mb-3">When checked, each pack size (e.g., 5L, 1L) is stored as a separate finished goods item (e.g., "Product X - 5L Pack"). Any quantity not allocated to a pack size is automatically added to the <strong>primary product</strong> as Bulk stock.</p>
                                 
                                 <!-- Pack Size Selector -->
                                 <div id="adpPackSizeCheckboxes" class="grid grid-cols-3 md:grid-cols-4 gap-2 mb-3">
@@ -7191,7 +7248,7 @@
                                         <span id="adpPackSummaryText" class="font-bold"></span>
                                     </div>
                                     <div id="adpUnallocatedWarning" class="hidden mt-2 p-2 bg-amber-50 rounded text-[11px] text-amber-800">
-                                        ℹ️ <strong>Unallocated:</strong> <span id="adpUnallocatedQty"></span> will remain as <strong>BULK</strong> in inventory (not packed yet)
+                                        ℹ️ <strong>Unallocated:</strong> <span id="adpUnallocatedQty"></span> will be added to the <strong>primary product</strong> as Bulk stock (not a separate item)
                                     </div>
                                 </div>
                                 
@@ -7362,23 +7419,176 @@
                 if (itemId != null && itemId !== '') {
                     // eslint-disable-next-line eqeqeq
                     const byId = arr.find(i => i.id == itemId || i.itemId == itemId || String(i.id) === String(itemId));
-                    if (byId) { console.log('[adpFindItem] found by id', itemId, 'in', cat, byId.name); return byId; }
+                    if (byId) { return byId; }
                 }
                 if (itemName) {
                     const n = itemName.toString().trim().toLowerCase();
                     const byName = arr.find(i => (i.name || i.itemName || '').toString().trim().toLowerCase() === n);
-                    if (byName) { console.log('[adpFindItem] found by name', itemName, 'in', cat, byName.name); return byName; }
+                    if (byName) { return byName; }
                 }
             }
-            console.warn('[adpFindItem] NOT FOUND — itemId:', itemId, 'itemName:', itemName, 'cats searched:', cats);
+            console.warn('[adpFindItem] NOT FOUND — itemId:', itemId, 'itemName:', itemName);
             return null;
+        }
+
+        // ── Searchable Dropdown Component ─────────────────────────────────────
+        function createSearchableSelect(containerId, options, placeholder, onSelect, selectedValue) {
+            const container = document.getElementById(containerId);
+            if (!container) return null;
+
+            // Store options data
+            const selectId = 'searchable-' + containerId;
+            const allOptions = Array.isArray(options) ? options : [];
+
+            // Create HTML structure
+            container.innerHTML = `
+                <div class="searchable-select-container" id="${selectId}-wrapper">
+                    <div class="searchable-select-input" id="${selectId}-input" tabindex="0">
+                        ${placeholder || 'Select...'}
+                    </div>
+                    <span class="searchable-select-arrow">▼</span>
+                    <div class="searchable-select-dropdown" id="${selectId}-dropdown">
+                        <div class="searchable-select-search">
+                            <input type="text" id="${selectId}-search" placeholder="Type to search..." autocomplete="off">
+                        </div>
+                        <div class="searchable-select-options" id="${selectId}-options">
+                        </div>
+                    </div>
+                </div>
+            `;
+
+            const wrapper = document.getElementById(`${selectId}-wrapper`);
+            const input = document.getElementById(`${selectId}-input`);
+            const dropdown = document.getElementById(`${selectId}-dropdown`);
+            const searchBox = document.getElementById(`${selectId}-search`);
+            const optionsContainer = document.getElementById(`${selectId}-options`);
+
+            let selectedOption = null;
+
+            // Render options
+            function renderOptions(filterText = '') {
+                const filter = filterText.toLowerCase().trim();
+                let html = '';
+
+                const filtered = filter
+                    ? allOptions.filter(opt => (opt.text || opt.name || '').toLowerCase().includes(filter))
+                    : allOptions;
+
+                if (filtered.length === 0) {
+                    html = '<div class="searchable-select-no-results">No items found</div>';
+                } else {
+                    filtered.forEach(opt => {
+                        const isSelected = selectedOption && selectedOption.value === opt.value;
+                        const displayText = opt.text || opt.name || opt.value || '';
+                        const stockInfo = opt.stock !== undefined ? ` (${opt.stock} in stock)` : '';
+                        html += `<div class="searchable-select-option ${isSelected ? 'selected' : ''}" data-value="${escAttr(opt.value)}">${escHtml(displayText)}${stockInfo}</div>`;
+                    });
+                }
+                optionsContainer.innerHTML = html;
+
+                // Add click handlers
+                optionsContainer.querySelectorAll('.searchable-select-option').forEach(el => {
+                    if (!el.classList.contains('disabled')) {
+                        el.addEventListener('click', function() {
+                            const value = this.dataset.value;
+                            const text = this.textContent;
+                            selectedOption = { value, text };
+                            input.textContent = text;
+                            dropdown.classList.remove('active');
+                            if (onSelect) onSelect(value, text, allOptions.find(o => o.value === value));
+                        });
+                    }
+                });
+            }
+
+            // Toggle dropdown
+            input.addEventListener('click', function() {
+                const isActive = dropdown.classList.contains('active');
+                // Close all other dropdowns
+                document.querySelectorAll('.searchable-select-dropdown').forEach(d => d.classList.remove('active'));
+                if (!isActive) {
+                    dropdown.classList.add('active');
+                    searchBox.value = '';
+                    renderOptions();
+                    setTimeout(() => searchBox.focus(), 10);
+                }
+            });
+
+            // Search functionality
+            searchBox.addEventListener('input', function() {
+                renderOptions(this.value);
+            });
+
+            // Keyboard navigation
+            searchBox.addEventListener('keydown', function(e) {
+                if (e.key === 'Escape') {
+                    dropdown.classList.remove('active');
+                    input.focus();
+                }
+            });
+
+            // Close on outside click
+            document.addEventListener('click', function(e) {
+                if (!wrapper.contains(e.target)) {
+                    dropdown.classList.remove('active');
+                }
+            });
+
+            // Initial render
+            renderOptions();
+
+            // Set initial value if provided
+            if (selectedValue) {
+                const initial = allOptions.find(o => o.value === selectedValue);
+                if (initial) {
+                    selectedOption = { value: initial.value, text: initial.text || initial.name };
+                    input.textContent = selectedOption.text;
+                }
+            }
+
+            return {
+                setOptions: function(newOptions) {
+                    allOptions.length = 0;
+                    allOptions.push(...newOptions);
+                    renderOptions();
+                },
+                setValue: function(value) {
+                    const opt = allOptions.find(o => o.value === value);
+                    if (opt) {
+                        selectedOption = { value: opt.value, text: opt.text || opt.name };
+                        input.textContent = selectedOption.text;
+                    }
+                },
+                getValue: function() {
+                    return selectedOption ? selectedOption.value : null;
+                }
+            };
+        }
+
+        // Build searchable select options from inventory data
+        function buildSearchableOptions(categoryKey, includeStock) {
+            const payload = window._adpPayload || {};
+            const inv = payload.inventory || {};
+            const items = Array.isArray(inv[categoryKey]) ? inv[categoryKey] : [];
+
+            return items.map(item => ({
+                value: item.id || item.name || '',
+                text: item.name || item.id || '',
+                name: item.name || '',
+                stock: includeStock ? adpGetStock(item) : undefined,
+                unit: item.unit || '',
+                raw: item
+            })).filter(o => o.value && o.text).sort((a, b) => a.text.localeCompare(b.text));
         }
 
         // ── ADP: load formulas from Database/latest ───────────────────────────
         async function adpLoadFormulas() {
-            const sel = document.getElementById('adpProductSelect');
-            if (!sel) return;
-            sel.innerHTML = '<option value="">Loading...</option>';
+            const container = document.getElementById('adpProductSelectContainer');
+            if (!container) return;
+
+            // Show loading state
+            container.innerHTML = '<select id="adpProductSelect" class="w-full px-3 py-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm font-semibold text-gray-800" disabled><option>Loading...</option></select>';
+
             try {
                 // Add cache-busting to ensure fresh stock data
                 const data = await callBackend('get_db', { _t: Date.now() });
@@ -7389,50 +7599,122 @@
 
                 window._adpPayload = payload; // cache full payload for item lookup
 
-                let opts = '<option value="">— Select a formula / product —</option>';
+                // Build searchable options array
+                const options = [];
+
                 if (formulas.length > 0) {
-                    opts += '<optgroup label="📋 Formulas">';
+                    options.push({ value: '', text: '📋 Formulas', disabled: true });
                     formulas.forEach(f => {
-                        const escapedName = escAttr(f.name || 'Unnamed');
-                        const escapedUnit = escAttr(f.outputUnit || f.unit || '');
-                        opts += `<option value="formula:${escAttr(f.id)}" data-formula-idx="${formulas.indexOf(f)}" data-name="${escapedName}" data-unit="${escapedUnit}" data-output-qty="${f.outputQty || 1}">${escHtml(f.name || 'Unnamed')}</option>`;
+                        // Try multiple possible unit field names
+                        const formulaUnit = f.outputUnit || f.unit || f.Unit || f.outputunit || f.OUTPUTUNIT || '';
+                        options.push({
+                            value: `formula:${f.id}`,
+                            text: f.name || 'Unnamed',
+                            name: f.name || '',
+                            unit: formulaUnit,
+                            formulaIdx: formulas.indexOf(f),
+                            outputQty: f.outputQty || f.outputqty || f.output || 1,
+                            raw: f
+                        });
                     });
-                    opts += '</optgroup>';
                 }
+
                 if (fgItems.length > 0) {
-                    opts += '<optgroup label="📦 Existing Finished Goods">';
+                    options.push({ value: '', text: '📦 Existing Finished Goods', disabled: true });
                     fgItems.forEach(fg => {
-                        // Use _effectiveStock (computed closing stock from backend) or fall back to quantity
                         const rawQty = parseFloat(fg.quantity) || 0;
                         const effStock = fg._effectiveStock;
                         const stock = (effStock != null) ? parseFloat(effStock) : rawQty;
-                        const stockStr = stock.toFixed(2);
-                        const escapedName = escAttr(fg.name || 'Unnamed');
-                        const escapedUnit = escAttr(fg.unit || '');
-                        opts += `<option value="fg:${escAttr(fg.id||fg.name)}" data-name="${escapedName}" data-unit="${escapedUnit}">` +
-                                `${escHtml(fg.name || 'Unnamed')} — stock: ${stockStr} ${escHtml(fg.unit || '')}</option>`;
+                        options.push({
+                            value: `fg:${fg.id || fg.name}`,
+                            text: `${fg.name || 'Unnamed'} (stock: ${stock.toFixed(2)} ${fg.unit || ''})`,
+                            name: fg.name || '',
+                            unit: fg.unit || '',
+                            stock: stock,
+                            raw: fg
+                        });
                     });
-                    opts += '</optgroup>';
                 }
-                if (formulas.length === 0 && fgItems.length === 0) {
-                    opts += '<option value="" disabled>No formulas found — type product name manually below</option>';
+
+                if (options.length === 0) {
+                    options.push({ value: '', text: 'No formulas found — type manually below', disabled: true });
                 }
-                sel.innerHTML = opts;
+
+                // Create searchable select
+                createSearchableSelect('adpProductSelectContainer', options, '— Search and select a formula / product —', function(value, text, rawOpt) {
+                    // Store selected value in hidden select for compatibility
+                    const hiddenSel = document.getElementById('adpProductSelect');
+                    if (hiddenSel) {
+                        hiddenSel.innerHTML = `<option value="${escAttr(value)}" data-name="${escAttr(rawOpt?.name || '')}" data-unit="${escAttr(rawOpt?.unit || '')}" data-formula-idx="${rawOpt?.formulaIdx ?? ''}" data-output-qty="${rawOpt?.outputQty || 1}">${escHtml(text)}</option>`;
+                        hiddenSel.value = value;
+                    }
+                    // Trigger the change handler
+                    adpOnProductChangeFromSearch(rawOpt);
+                });
+
             } catch (e) {
-                sel.innerHTML = '<option value="">Error loading — type manually</option>';
+                container.innerHTML = '<select id="adpProductSelect" class="w-full px-3 py-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm font-semibold text-gray-800" disabled><option>Error loading</option></select>';
                 showToast('Could not load formulas: ' + (e.message || e), 'warning');
             }
         }
 
-        // ── ADP: when product dropdown changes ────────────────────────────────
+        // ── ADP: when product dropdown changes (from searchable select) ─────────
+        function adpOnProductChangeFromSearch(rawOpt) {
+            if (!rawOpt) return;
+
+            const name = rawOpt.name || '';
+            const unit = rawOpt.unit || '';
+            const value = rawOpt.value || '';
+
+            const nameEl = document.getElementById('adpProductName');
+            const unitEl = document.getElementById('adpUnit');
+
+            if (nameEl) nameEl.value = name;
+            if (unitEl) {
+                unitEl.value = unit;
+                unitEl.dispatchEvent(new Event('input', { bubbles: true }));
+                unitEl.dispatchEvent(new Event('change', { bubbles: true }));
+            }
+
+            if (value.startsWith('formula:')) {
+                const idx = parseInt(rawOpt.formulaIdx, 10);
+                const payload = window._adpPayload;
+                const formulas = (payload && Array.isArray(payload.formulas)) ? payload.formulas : [];
+                const formula = formulas[idx] || formulas.find(f => String(f.id) === value.replace('formula:', ''));
+                if (formula) {
+                    window._adpCurrentFormula = formula;
+                    const targetQty = parseFloat(document.getElementById('adpQty').value) || parseFloat(rawOpt.outputQty) || 1;
+                    if (document.getElementById('adpQty') && !document.getElementById('adpQty').value) {
+                        document.getElementById('adpQty').value = formula.outputQty || '';
+                    }
+                    adpPopulateIngredients(formula, targetQty);
+                }
+            } else {
+                // Clear stored formula if not a formula selection
+                window._adpCurrentFormula = null;
+            }
+            // Update pack size options based on product (use setTimeout to ensure DOM is updated)
+            setTimeout(() => {
+                adpUpdatePackSizeOptions();
+                adpRenderPackSizeCheckboxes();
+                adpUpdatePackSummary();
+            }, 50);
+        }
+
+        // ── ADP: when product dropdown changes (legacy select handler) ────────
         function adpOnProductChange() {
             const sel = document.getElementById('adpProductSelect');
             if (!sel || !sel.value) return;
             const opt = sel.options[sel.selectedIndex];
+            if (!opt) return;
             const name = opt.dataset.name || '';
             const unit = opt.dataset.unit || '';
-            if (document.getElementById('adpProductName')) document.getElementById('adpProductName').value = name;
-            if (document.getElementById('adpUnit') && unit) document.getElementById('adpUnit').value = unit;
+
+            const nameEl = document.getElementById('adpProductName');
+            const unitEl = document.getElementById('adpUnit');
+
+            if (nameEl) nameEl.value = name;
+            if (unitEl) unitEl.value = unit;
 
             if (sel.value.startsWith('formula:')) {
                 const idx = parseInt(opt.dataset.formulaIdx, 10);
@@ -7447,15 +7729,18 @@
                     adpPopulateIngredients(formula, targetQty);
                 }
             }
-            // Update pack size options based on product
-            adpUpdatePackSizeOptions();
-            adpRenderPackSizeCheckboxes();
-            adpUpdatePackSummary();
+            // Update pack size options based on product (use setTimeout to ensure DOM is updated)
+            setTimeout(() => {
+                adpUpdatePackSizeOptions();
+                adpRenderPackSizeCheckboxes();
+                adpUpdatePackSummary();
+            }, 50);
         }
 
         // ── ADP: pack size handling functions ──────────────────────────────────────
         function adpGetAvailablePackSizes() {
-            return ['100ml', '250ml', '500ml', '1L', '5L', '10L', '250gm', '500gm', '1kg', '5kg', 'Bulk'];
+            // 'Bulk' is intentionally excluded: any unallocated qty is automatically added to the primary product as Bulk.
+            return ['50ml', '100ml', '250ml', '500ml', '1L', '5L', '10L', '25L', '50L', '200L', '250gm', '500gm', '1kg', '5kg'];
         }
 
         function adpDetectProductMode() {
@@ -7527,24 +7812,27 @@
         function adpCreatePackSizeCard(size) {
             const cardsContainer = document.getElementById('adpPackSizeCards');
             if (!cardsContainer) return;
-            
+
             // Get suggested materials from formula or universal defaults
             const suggestedMaterials = adpGetSuggestedMaterialsForPackSize(size);
-            
+
+            // Get product unit for display (kg, L, etc.)
+            const productUnit = (document.getElementById('adpUnit')?.value || 'L').trim();
+
             const card = document.createElement('div');
             card.id = 'adp-pack-card-' + size;
-            card.className = 'bg-white rounded-xl border border-blue-200 overflow-hidden shadow-sm';
-            
-            // Calculate liquid volume for this pack size
-            const volumeInLiters = adpConvertPackSizeToLiters(size);
-            
+            card.className = 'bg-white rounded-xl border border-blue-200 shadow-sm';
+
+            // Calculate pack volume/weight for this pack size
+            const packVolume = adpConvertPackSizeToLiters(size);
+
             card.innerHTML = `
                 <div class="p-3 bg-gradient-to-r from-blue-50 to-indigo-50 border-b border-blue-100">
                     <div class="flex items-center justify-between">
                         <div class="flex items-center gap-2">
                             <span class="text-lg">📦</span>
                             <span class="font-bold text-gray-800">${size}</span>
-                            <span class="text-[10px] bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full">${volumeInLiters > 0 ? volumeInLiters + 'L each' : 'Bulk'}</span>
+                            <span class="text-[10px] bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full">${packVolume > 0 ? packVolume + productUnit + ' each' : 'Bulk'}</span>
                         </div>
                         <button onclick="adpRemovePackSizeCard('${size}')" class="text-gray-400 hover:text-red-500 transition-colors">
                             <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
@@ -7555,7 +7843,7 @@
                         <input type="number" id="adp-pack-liters-${size}" min="0" step="0.1" value="0"
                             onchange="adpUpdatePackSummary()"
                             class="w-24 px-2 py-1 bg-white border border-gray-300 rounded text-sm font-semibold text-gray-800 text-center focus:ring-2 focus:ring-blue-500 focus:border-blue-500">
-                        <span class="text-[10px] text-gray-500">Liters</span>
+                        <span class="text-[10px] text-gray-500">${productUnit}</span>
                     </div>
                     <div class="mt-2 flex items-center gap-2 text-[10px] text-gray-600 bg-gray-50 p-2 rounded">
                         <span>📦</span>
@@ -7584,23 +7872,76 @@
             window.adpPackSizeConfigs[size] = {
                 materials: suggestedMaterials
             };
+            // Auto-add 2 blank material rows so user can start filling immediately
+            if (suggestedMaterials.length === 0) {
+                setTimeout(() => {
+                    adpAddMaterialToPackSize(size);
+                    adpAddMaterialToPackSize(size);
+                }, 50);
+            }
         }
 
-        function adpRenderMaterialRow(size, idx, material) {
-            const packingOptions = buildProductionItemOptions('packingMaterials', material?.itemId || '');
-            const labelOptions = buildProductionItemOptions('labels', material?.itemId || '');
-            const allOptions = packingOptions.replace('</optgroup>', '') + labelOptions.replace('<optgroup label="Labels">', '');
-            
+        async function adpRenderMaterialRow(size, idx, material) {
+            const containerId = `adp-mat-select-${size}-${idx}`;
+
+            // Fetch fresh stock data before creating dropdown
+            let freshPackingOpts = [];
+            let freshLabelOpts = [];
+            try {
+                const data = await callBackend('get_db', { _t: Date.now() });
+                const payload = (data && data.data) ? data.data : data;
+                if (payload && payload.inventory) {
+                    window._adpPayload = payload; // update cached data
+                    freshPackingOpts = buildSearchableOptions('packingMaterials', true);
+                    freshLabelOpts = buildSearchableOptions('labels', true);
+                }
+            } catch (e) {
+                // Fallback to cached data
+                freshPackingOpts = buildSearchableOptions('packingMaterials', true);
+                freshLabelOpts = buildSearchableOptions('labels', true);
+            }
+
+            // Schedule searchable select initialization after DOM insertion
+            setTimeout(() => {
+                const allOptions = [{ value: '', text: '— Select a category —', disabled: true }, { value: '', text: '📦 Packing Materials', disabled: true }, ...freshPackingOpts, { value: '', text: '🏷️ Labels', disabled: true }, ...freshLabelOpts];
+
+                createSearchableSelect(containerId, allOptions, 'Select material...', function(value, text, rawItem) {
+                    // Update material config
+                    if (!window.adpPackSizeConfigs[size]) window.adpPackSizeConfigs[size] = { materials: [] };
+                    const mat = window.adpPackSizeConfigs[size].materials[idx] || {};
+                    mat.itemId = value;
+                    mat.itemName = text;
+                    mat.category = rawItem?.raw?.category || (value.startsWith('LABEL') ? 'labels' : 'packingMaterials');
+
+                    // Auto-fill quantity: 1 unit of this material per pack
+                    const packCountEl = document.getElementById(`adp-pack-count-${size}`);
+                    const totalPacks = packCountEl ? (parseInt(packCountEl.textContent) || 0) : 0;
+                    if (totalPacks > 0) {
+                        mat.qty = totalPacks;
+                        mat.qtyPerPack = 1;
+                        const rowDiv = document.getElementById(`adp-mat-${size}-${idx}`);
+                        const qtyInput = rowDiv ? rowDiv.querySelector('input[type="number"]') : null;
+                        if (qtyInput) qtyInput.value = totalPacks;
+                    }
+
+                    window.adpPackSizeConfigs[size].materials[idx] = mat;
+
+                    // Update stock display
+                    adpUpdateMaterialStockByValue(value, containerId);
+                }, material?.itemId);
+            }, 0);
+
             return `
                 <div class="flex items-center gap-2 p-2 bg-gray-50 rounded-lg border border-gray-200" id="adp-mat-${size}-${idx}">
-                    <select class="flex-1 text-xs bg-white border border-gray-300 rounded px-2 py-1.5" onchange="adpUpdateMaterialStock(this)">
-                        <option value="">Select material...</option>
-                        ${allOptions}
-                    </select>
-                    <input type="number" value="${material?.qty || ''}" placeholder="Total qty needed" 
+                    <div class="flex-1" id="${containerId}">
+                        <select class="w-full text-xs bg-white border border-gray-300 rounded px-2 py-1.5" disabled>
+                            <option>Loading...</option>
+                        </select>
+                    </div>
+                    <input type="number" value="${material?.qty || ''}" placeholder="Total qty needed"
                         class="w-28 text-xs bg-white border border-gray-300 rounded px-2 py-1.5 text-center"
                         onchange="adpUpdatePackMaterialQty('${size}', ${idx}, this.value)">
-                    <button onclick="this.parentElement.remove(); adpRemovePackMaterial('${size}', ${idx});" 
+                    <button onclick="this.parentElement.remove(); adpRemovePackMaterial('${size}', ${idx});"
                         class="text-gray-400 hover:text-red-500 p-1">
                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
                     </button>
@@ -7657,31 +7998,50 @@
         function adpAddMaterialToPackSize(size) {
             const container = document.getElementById('adp-pack-materials-' + size);
             if (!container) return;
-            
+
             const idx = Date.now();
             const div = document.createElement('div');
             div.id = `adp-mat-${size}-${idx}`;
             div.className = 'flex items-center gap-2 p-2 bg-gray-50 rounded-lg border border-gray-200';
-            
-            const packingOptions = buildProductionItemOptions('packingMaterials', '');
-            const labelOptions = buildProductionItemOptions('labels', '');
-            const allOptions = packingOptions.replace('</optgroup>', '') + labelOptions.replace('<optgroup label="Labels">', '');
-            
+
+            const containerId = `adp-mat-select-${size}-${idx}`;
+
             div.innerHTML = `
-                <select class="flex-1 text-xs bg-white border border-gray-300 rounded px-2 py-1.5" onchange="adpUpdateMaterialStock(this)">
-                    <option value="">Select material...</option>
-                    ${allOptions}
-                </select>
-                <input type="number" placeholder="Total qty" 
+                <div class="flex-1" id="${containerId}"></div>
+                <input type="number" placeholder="Total qty"
                     class="w-24 text-xs bg-white border border-gray-300 rounded px-2 py-1.5 text-center"
                     onchange="adpUpdatePackMaterialQty('${size}', ${idx}, this.value)">
                 <button onclick="this.parentElement.remove()" class="text-gray-400 hover:text-red-500 p-1">
                     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
                 </button>
             `;
-            
+
             container.appendChild(div);
-            
+
+            // Create searchable select
+            const packingOpts = buildSearchableOptions('packingMaterials', true);
+            const labelOpts = buildSearchableOptions('labels', true);
+            const allOptions = [{ value: '', text: '— Select a category —', disabled: true }, { value: '', text: '📦 Packing Materials', disabled: true }, ...packingOpts, { value: '', text: '🏷️ Labels', disabled: true }, ...labelOpts];
+
+            createSearchableSelect(containerId, allOptions, 'Select material...', function(value, text, rawItem) {
+                // Update config
+                if (!window.adpPackSizeConfigs[size]) window.adpPackSizeConfigs[size] = { materials: [] };
+                const mat = window.adpPackSizeConfigs[size].materials.find((m, i) => i === window.adpPackSizeConfigs[size].materials.length - 1) || {};
+                mat.itemId = value;
+                mat.itemName = text;
+                mat.category = rawItem?.raw?.category || (value.startsWith('LABEL') ? 'labels' : 'packingMaterials');
+
+                // Auto-fill quantity: 1 unit of this material per pack
+                const packCountEl = document.getElementById(`adp-pack-count-${size}`);
+                const packCount = packCountEl ? (parseInt(packCountEl.textContent) || 0) : 0;
+                if (packCount > 0) {
+                    mat.qty = packCount;
+                    mat.qtyPerPack = 1;
+                    const qtyInput = div.querySelector('input[type="number"]');
+                    if (qtyInput) qtyInput.value = packCount;
+                }
+            });
+
             // Update config
             if (!window.adpPackSizeConfigs[size]) {
                 window.adpPackSizeConfigs[size] = { materials: [] };
@@ -7732,7 +8092,7 @@
                 summaryTextEl.innerHTML = `
                     <span class="text-amber-700">Produced: ${producedQty.toFixed(2)} ${unit}</span>
                     <span class="mx-1">|</span>
-                    <span class="text-blue-700">Packed: ${totalPackedLiters.toFixed(2)} L</span>
+                    <span class="text-blue-700">Packed: ${totalPackedLiters.toFixed(2)} ${unit}</span>
                 `;
                 
                 const unallocated = producedQty - totalPackedLiters;
@@ -7785,8 +8145,102 @@
             const item = adpFindItem(inv, 'packingMaterials', itemId, '') || adpFindItem(inv, 'labels', itemId, '');
             const stock = item ? adpGetStock(item) : 0;
             
-            // Show stock indicator (optional - can add visual feedback)
+            // Show stock indicator
             selectEl.title = stock > 0 ? `In stock: ${stock.toFixed(2)}` : 'No stock';
+            
+            // Auto-calculate material quantity
+            const card = row.closest('[id^="adp-pack-card-"]');
+            if (card) {
+                const size = card.id.replace('adp-pack-card-', '');
+                const litersInput = document.getElementById(`adp-pack-liters-${size}`);
+                const litersToPack = parseFloat(litersInput?.value) || 0;
+                
+                if (litersToPack > 0) {
+                    // Get material quantity per pack from universalPackDetails
+                    const packDetails = window.universalPackDetails || {};
+                    const sizeDetails = packDetails[size] || {};
+                    const materials = Array.isArray(sizeDetails) ? sizeDetails : (sizeDetails.materials || []);
+                    
+                    const matDetail = materials.find(m => 
+                        (m.itemId === itemId || m.id === itemId) || 
+                        (m.itemName === selectEl.options[selectEl.selectedIndex]?.text)
+                    );
+                    
+                    const qtyPerPack = matDetail ? (parseFloat(matDetail.quantity) || 0) : 0;
+                    
+                    if (qtyPerPack > 0) {
+                        const volumePerPack = adpConvertPackSizeToLiters(size);
+                        const packCount = volumePerPack > 0 ? Math.ceil(litersToPack / volumePerPack) : 0;
+                        const totalQty = qtyPerPack * packCount;
+                        
+                        // Fill the quantity input
+                        const qtyInput = row.querySelector('input[type="number"]');
+                        if (qtyInput) {
+                            qtyInput.value = totalQty.toFixed(2);
+                            // Update config
+                            const idx = row.id.replace(`adp-mat-${size}-`, '');
+                            if (window.adpPackSizeConfigs[size]) {
+                                if (!window.adpPackSizeConfigs[size].materials[idx]) {
+                                    window.adpPackSizeConfigs[size].materials[idx] = { itemId, qtyPerPack: 0 };
+                                }
+                                window.adpPackSizeConfigs[size].materials[idx].qtyPerPack = totalQty;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Helper for searchable dropdown - update stock by itemId and containerId
+        function adpUpdateMaterialStockByValue(itemId, containerId) {
+            if (!itemId || !containerId) return;
+            const wrapper = document.getElementById(containerId);
+            if (!wrapper) return;
+            const row = wrapper.closest('.flex');
+            if (!row) return;
+
+            const payload = window._adpPayload || {};
+            const inv = payload.inventory || {};
+            const item = adpFindItem(inv, 'packingMaterials', itemId, '') || adpFindItem(inv, 'labels', itemId, '');
+            const stock = item ? adpGetStock(item) : 0;
+
+            // Update title on the input to show stock
+            const input = wrapper.querySelector('.searchable-select-input');
+            if (input) {
+                input.title = stock > 0 ? `In stock: ${stock.toFixed(2)}` : 'No stock';
+            }
+
+            // Auto-calculate material quantity
+            const card = row.closest('[id^="adp-pack-card-"]');
+            if (card && item) {
+                const size = card.id.replace('adp-pack-card-', '');
+                const litersInput = document.getElementById(`adp-pack-liters-${size}`);
+                const litersToPack = parseFloat(litersInput?.value) || 0;
+
+                if (litersToPack > 0) {
+                    const packDetails = window.universalPackDetails || {};
+                    const sizeDetails = packDetails[size] || {};
+                    const materials = Array.isArray(sizeDetails) ? sizeDetails : (sizeDetails.materials || []);
+
+                    const matDetail = materials.find(m =>
+                        (m.itemId === itemId || m.id === itemId) ||
+                        (m.itemName === item.name)
+                    );
+
+                    const qtyPerPack = matDetail ? (parseFloat(matDetail.quantity) || 0) : 0;
+
+                    if (qtyPerPack > 0) {
+                        const volumePerPack = adpConvertPackSizeToLiters(size);
+                        const packCount = volumePerPack > 0 ? Math.ceil(litersToPack / volumePerPack) : 0;
+                        const totalQty = qtyPerPack * packCount;
+
+                        const qtyInput = row.querySelector('input[type="number"]');
+                        if (qtyInput) {
+                            qtyInput.value = totalQty.toFixed(2);
+                        }
+                    }
+                }
+            }
         }
 
         function adpUpdatePackMaterialQty(size, idx, qty) {
@@ -7810,6 +8264,8 @@
             
             document.querySelectorAll('[id^="adp-pack-card-"]').forEach(card => {
                 const size = card.id.replace('adp-pack-card-', '');
+                // Skip any Bulk card — unallocated qty is always auto-added to primary product below
+                if (size.toLowerCase() === 'bulk') return;
                 const litersInput = document.getElementById(`adp-pack-liters-${size}`);
                 const litersToPack = parseFloat(litersInput?.value) || 0;
                 
@@ -7842,16 +8298,34 @@
                 packData.push({
                     size: size,
                     packCount: packCount,
+                    packs: packCount,
+                    quantity: litersToPack,
+                    qty: litersToPack,
                     volumePerPack: volumePerPack,
                     totalVolume: litersToPack,
                     materials: materials
                 });
             });
             
+            // Add unallocated quantity as Bulk pack size
+            const unallocated = totalProduced - totalPacked;
+            if (unallocated > 0.01) {
+                packData.push({
+                    size: 'Bulk',
+                    packCount: 0,
+                    packs: 0,
+                    quantity: unallocated,
+                    qty: unallocated,
+                    volumePerPack: 0,
+                    totalVolume: unallocated,
+                    materials: []
+                });
+            }
+            
             return {
                 packSizes: packData,
                 totalPacked: totalPacked,
-                unallocated: totalProduced - totalPacked,
+                unallocated: unallocated,
                 isFullyPacked: Math.abs(totalProduced - totalPacked) < 0.01
             };
         }
@@ -7951,14 +8425,7 @@
 
         // ── ADP: scale ingredients when produced qty changes ──────────────────
         function adpScaleIngredients() {
-            const sel = document.getElementById('adpProductSelect');
-            if (!sel || !sel.value || !sel.value.startsWith('formula:')) return;
-            const opt = sel.options[sel.selectedIndex];
-            const idx = parseInt(opt.dataset.formulaIdx, 10);
-            const payload = window._adpPayload;
-            if (!payload) return;
-            const formulas = Array.isArray(payload.formulas) ? payload.formulas : [];
-            const formula = formulas[idx] || formulas.find(f => String(f.id) === sel.value.replace('formula:', ''));
+            const formula = window._adpCurrentFormula;
             if (!formula) return;
             const targetQty = parseFloat(document.getElementById('adpQty').value) || 0;
             if (targetQty > 0) {
@@ -8382,7 +8849,6 @@
 
             // Collect ingredients from table (handles both formula rows with text input and manual rows with dropdown)
             const ingredients = [];
-            console.log('[ADP_COLLECT] Starting ingredient collection...');
             document.querySelectorAll('#adpIngTable tr').forEach((row, idx) => {
                 const catEl  = row.querySelector('.adp-ing-cat');
                 const qtyEl  = row.querySelector('.adp-ing-qty');
@@ -8390,8 +8856,6 @@
                 // Check for dropdown (manual add) or text input (formula auto-populated)
                 const selectEl = row.querySelector('.adp-ing-select');
                 const textEl = row.querySelector('.adp-ing-name');
-                
-                console.log(`[ADP_COLLECT] Row ${idx}: selectEl=${!!selectEl}, textEl=${!!textEl}, qtyEl=${!!qtyEl}`);
                 
                 let name = '';
                 let itemId = '';
@@ -8413,21 +8877,14 @@
                 const qty  = parseFloat(qtyEl.value);
                 const cat  = catEl ? catEl.value : 'rawMaterials';
                 
-                console.log(`[ADP_COLLECT] Row ${idx}: name="${name}", itemId="${itemId}", qty=${qty}, cat=${cat}`);
-                
-                if (!name || name === 'Select...' || !qty || qty <= 0) {
-                    console.log(`[ADP_COLLECT] Row ${idx}: SKIPPED (name="${name}", qty=${qty})`);
-                    return;
-                }
+                if (!name || name === 'Select...' || !qty || qty <= 0) return;
                 ingredients.push({
                     itemId: itemId,
                     itemName: name,
                     category: cat,
                     quantity: qty
                 });
-                console.log(`[ADP_COLLECT] Row ${idx}: ADDED`);
             });
-            console.log('[ADP_COLLECT] Total ingredients:', ingredients.length);
 
             // Collect packing materials from table
             document.querySelectorAll('#adpPackingTable tr').forEach(row => {
@@ -8493,7 +8950,7 @@
                     packSummaryMsg += `\n  Materials: ${pack.materials.length} types`;
                 });
                 if (packData.unallocated > 0.01) {
-                    packSummaryMsg += `\n\n📦 BULK (Unpacked): ${packData.unallocated.toFixed(2)} ${unit}`;
+                    packSummaryMsg += `\n\n📦 BULK → Primary Product: ${packData.unallocated.toFixed(2)} ${unit} (added to "${productName}")`;
                 }
             }
 
@@ -8508,11 +8965,6 @@
             msgEl.className = 'hidden';
 
             try {
-                // Debug: Log what we're sending
-                console.log('[ADP_SUBMIT] Product:', productName, 'Qty:', producedQty, unit);
-                console.log('[ADP_SUBMIT] Ingredients count:', ingredients.length);
-                console.log('[ADP_SUBMIT] Ingredients:', JSON.stringify(ingredients, null, 2));
-
                 const data = await callBackendPost('admin_direct_produce', {
                     email: currentUser.email,
                     user: currentUser.name,
@@ -8529,6 +8981,7 @@
                     totalPacked: packData.totalPacked,
                     unallocatedQty: packData.unallocated,
                     isFullyPacked: packData.isFullyPacked,
+                    trackPackWise: document.getElementById('adpTrackPackWise').checked,
                     // Add flag to ensure backend creates full traceability
                     createTraceability: true,
                     syncToInventory: true
@@ -8546,7 +8999,7 @@
                             packSuccessMsg += `<p class="text-xs text-blue-700">• ${pack.size}: ${pack.packCount} packs (${pack.totalVolume.toFixed(2)} ${unit})</p>`;
                         });
                         if (packData.unallocated > 0.01) {
-                            packSuccessMsg += `<p class="text-xs text-amber-700 mt-1 font-semibold">📦 BULK (Unpacked): ${packData.unallocated.toFixed(2)} ${unit}</p>`;
+                            packSuccessMsg += `<p class="text-xs text-amber-700 mt-1 font-semibold">📦 BULK → Primary Product "${productName}": ${packData.unallocated.toFixed(2)} ${unit}</p>`;
                         }
                         packSuccessMsg += `</div>`;
                     }
@@ -8699,12 +9152,9 @@
             if (!container) return;
             container.innerHTML = '<p class="text-gray-400 text-sm text-center py-6">Loading...</p>';
             try {
-                const data = await callBackend('get_all_requests', { page: 1, limit: 200 });
+                const data = await callBackend('get_direct_produce_history', { limit: 200 });
                 const requests = (data && data.result === 'success' && Array.isArray(data.requests)) ? data.requests : [];
-                _adpAllRecords = requests.filter(r =>
-                    r.adminDirectProduce ||
-                    (r.type || '').toLowerCase().includes('admin direct')
-                ).sort((a, b) => (b.date || '').localeCompare(a.date || '')).slice(0, 100);
+                _adpAllRecords = requests.sort((a, b) => (b.productionDate || b.date || '').localeCompare(a.productionDate || a.date || '')).slice(0, 100);
 
                 if (_adpAllRecords.length === 0) {
                     container.innerHTML = '<p class="text-gray-400 text-sm text-center py-6">No direct production records yet.</p>';
